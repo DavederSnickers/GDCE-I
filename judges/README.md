@@ -14,8 +14,8 @@ the five baselines run in five mutually incompatible environments (Python 3.9 to
 internals that changed in between.
 
 Accuracies below were measured on the paper's split. The repository does not
-distribute that split (`data/README.md` says why), so a rebuilt dataset will not
-reproduce these numbers exactly — see section 7 of the top-level README.
+distribute that split, so a rebuilt dataset will not reproduce these numbers
+exactly; `data/README.md` explains why and how far off to expect.
 
 | file | conv | features | edge dim | selected epoch | val acc | test acc |
 |---|---|---|---|---|---|---|
@@ -63,4 +63,7 @@ reproduce/reproduce_gdce_i_results.sh judges     # retrains all of them, ~1 GPU 
 ```
 
 `judges_original/` holds the baselines' *own* classifiers, each trained to its
-paper's recipe, for the control experiment in Section S3.
+paper's recipe, for the control experiment in Section S3. One of them is
+missing: `configs/experiment/*_orig_xplgcn_s3.yaml` references
+`judge_mutagenicity_mol_xplgcn`, which is not part of the released set, so that
+one configuration cannot be run as shipped.

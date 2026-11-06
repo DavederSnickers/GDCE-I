@@ -186,39 +186,7 @@ short version is that GDCE-I needs two things from you — a dataset whose graph
 fit the node cap, and a classifier that can be called on a dense
 `(X, E)` pair — and nothing else about the method changes.
 
-## 7. Honest notes
-
-* **The 60/20/20 split is drawn with an unseeded permutation**
-  (`SpectreGraphDataset.process()`), so your split is not ours and two builds of
-  your own are not each other's either. The split sizes and the preprocessing
-  are deterministic; the metrics should land within roughly the standard
-  deviations the paper reports, because those already are the sampling noise of
-  an n = 100 draw from the same population — `docs/training.md` section 3 gives
-  the measured bands, and names τ̃ and the PROTEINS row as the two places that
-  need more room. The one number that genuinely does not reproduce is the test
-  accuracy of the shipped classifiers on your split, since they were trained on
-  ours. Seed the permutation if you want a build you can repeat —
-  `TUTORIAL.md` says where.
-* **PROTEINS is one run over the complete test split** (174 graphs), not five
-  samples of 100, so its row in Table 2 has no standard deviation.
-* **Training is seeded but not bitwise deterministic.** `seed_everything(0)` is
-  set; `deterministic=True` is not, so two runs on different hardware differ.
-  We have one training run per model and did not measure that spread —
-  `docs/training.md` says what to check instead.
-* **`src/metrics/drd2_scorer.py` needs a 34 MB SVM pickle that is not shipped.**
-  It is reachable only through `properties.drd2()`, which no experiment here
-  calls; everything else in `src/metrics/` works.
-* **`src/inversion_nci1_nofreq.py` is the runner for PROTEINS and TWITTER.** The
-  name is historical — it is the binary-adjacency runner, as opposed to the
-  5-edge-class molecular one.
-* **NCI1 appears in the code but not in the release.** It was dropped from the
-  paper; `spectre_dataset.py` and some baseline adapters still cover it, because
-  pulling it out of a file every run depends on is the riskier change. No NCI1
-  classifier, split or result is shipped.
-* **Section S3's XPlore classifier** (`judge_mutagenicity_mol_xplgcn`) is
-  referenced by a config but is not part of the released `judges_original/`.
-
-## 8. Licence and attribution
+## 7. Licence and attribution
 
 MIT, see `LICENSE`. This is a derivative of **DiGress** (Vignac et al., ICLR
 2023, MIT) and follows **FreeGress** for classifier-free guidance on discrete
