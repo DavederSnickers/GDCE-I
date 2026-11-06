@@ -1,0 +1,6 @@
+name:      CF2
+upstream:  https://github.com/chrisjtan/gnn_cff
+commit:    9020e74
+licence:   NONE -- no licence file in the upstream repository
+provides:  Table 2 (CF2), Section S3
+local dir: baselines/gnn_cff (not published)

@@ -1,0 +1,4 @@
+hidden_layers: [128, 128, 128]
+dropout: 0.5
+name: GINE
+batchnorm: false   # unused by GINENet_G; kept for cfg-shape parity with gcn.yaml

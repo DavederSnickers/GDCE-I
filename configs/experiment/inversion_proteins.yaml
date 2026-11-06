@@ -1,0 +1,48 @@
+# @package _global_
+
+general:
+    name: 'inversion-proteins'
+    gpus: 1
+    test_only: '${oc.env:GDCE_CKPT}/proteins_gcn.ckpt'
+    wandb: 'disabled'
+    check_val_every_n_epochs: 50
+    sample_every_val: 9999
+    samples_to_generate: 20
+    samples_to_save: 20
+    log_every_steps: 100
+    final_model_samples_to_generate: 30
+    final_model_samples_to_save: 30
+
+train:
+    n_epochs: 3
+    batch_size: 256
+    lr: 0.0002
+    save_model: True
+    ckpt_every_n_train_steps: 50
+    num_interops_workers: 1
+
+model:
+    diffusion_steps: 500
+    n_layers: 8
+    lambda_train: [5, 0]
+    extra_features: null
+    hidden_mlp_dims: { 'X': 256, 'E': 128, 'y': 256 }
+    hidden_dims: { 'dx': 256, 'de': 64, 'dy': 128, 'n_head': 8, 'dim_ffX': 256, 'dim_ffE': 128, 'dim_ffy': 256 }
+
+guidance:
+    guidance_target: ['motif']
+    p_uncond: 0.05
+    trainable_cf: True
+    guidance_medium: 'both'
+    s: 3
+    s_values: [3]
+    run_counterfactual: false
+    n_samples_per_test_molecule: 10
+    n_test_molecules_to_sample: 174
+    build_with_partial_charges: "new"
+    label_source: 'classifier'
+    graph_classifier_type: 'gcn'
+    graph_classifier_path: '${oc.env:GDCE_JUDGES}/judge_proteins_gcn'
+    include_split: null
+    node_inference_method: null
+    node_model_path: null

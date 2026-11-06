@@ -1,0 +1,15 @@
+# C2Explainer on PROTEINS (GDCE preprocessing, 60/20/20 split) -- cluster.
+# Against the SHARED CLASSIFIER, so that the flip rate is comparable to GDCE-I
+# and UCExplainer. Usage:
+#   apprun python run_c2_nci1_evaluation.py --config configs/proteins.cluster.yaml \
+#       classifier=shared_judge shared_judge_path=<prefix>
+# Everything not set here is inherited from configs/nci1.yaml.
+
+gdce_path: <GDCE_ROOT>
+gdce_dataset_name: proteins    # 3 Knotentypen (Helix/Sheet/Turn), binaere Adjazenz
+datadir: data/proteins/        # relativ zu gdce_path
+
+classifier: shared_judge
+shared_judge_path: <GDCE_JUDGES>/judge_proteins_gcn
+
+out_dir: results/shared_judge_nonmol/proteins_gcn

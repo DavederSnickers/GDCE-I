@@ -1,0 +1,60 @@
+# @package _global_
+# Original-classifier ablation (R1.4), s = 3. Identical to inversion_mutag_mol_gcn_s3.yaml except
+# that the diffusion model (mutag_mol_orig_cf2gcn.yaml) and the flip test use
+# CF2's GCNGraph (gnn_cff recipe, seed 1; seed 0 trained to a constant predictor).
+
+general:
+    name: 'inv-mutag-mol-orig-cf2gcn-s3'
+    gpus: 1
+    test_only: null              # set on the command line: general.test_only=<last.ckpt>
+    wandb: 'disabled'
+    check_val_every_n_epochs: 50
+    sample_every_val: 9999
+    samples_to_generate: 20
+    samples_to_save: 20
+    log_every_steps: 100
+    final_model_samples_to_generate: 30
+    final_model_samples_to_save: 30
+
+train:
+    n_epochs: 3000
+    batch_size: 256
+    lr: 0.0002
+    save_model: True
+    ckpt_every_n_train_steps: 50
+    num_interops_workers: 1
+
+model:
+    diffusion_steps: 500
+    n_layers: 8
+    lambda_train: [5, 0]
+    extra_features: null
+    hidden_mlp_dims: { 'X': 256, 'E': 128, 'y': 256 }
+    hidden_dims: { 'dx': 256, 'de': 64, 'dy': 128, 'n_head': 8, 'dim_ffX': 256, 'dim_ffE': 128, 'dim_ffy': 256 }
+
+guidance:
+    guidance_target: ['tox']
+    p_uncond: 0.05
+    trainable_cf: True
+    guidance_medium: 'both'
+    s: 3
+    s_values: [3]
+    # Inversion variant for the comparison:
+    #   'fresh'     — naive inversion: fresh Gumbel captured along the forward chain
+    #   'posterior' — Plan A: edit-friendly posterior Gumbel (exact reconstruction)
+    #   'noinv'     — no inversion: original GDCE, fresh sampling per reverse step
+    inversion_method: 'posterior'
+    inversion_margin: 0.0       # bump to e.g. 1e-3 if posterior recon isn't bit-exact (bf16 ties)
+    n_runs: 5
+    n_samples_per_run: 100
+    compute_mmd: false          # MMD off for the guidance-scale sweeps
+    require_valid: false        # stats are reported for first-flip AND first-valid regardless
+    recon_check: false
+    run_counterfactual: false
+    n_samples_per_test_molecule: 10
+    n_test_molecules_to_sample: 250
+    build_with_partial_charges: "new"
+    label_source: 'classifier'
+    # Set these to your checkpoint paths
+    graph_classifier_path: null
+    shared_judge_path: '${oc.env:GDCE_JUDGES_ORIG}/judge_mutagenicity_mol_cf2gcn_seed1'

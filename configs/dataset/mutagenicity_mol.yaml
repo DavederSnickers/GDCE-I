@@ -1,0 +1,3 @@
+name: mutagenicity_mol
+datadir: 'data/mutagenicity_mol/'
+pin_memory: False

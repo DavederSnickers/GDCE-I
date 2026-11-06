@@ -1,0 +1,10 @@
+# Cluster-specific overrides on top of mutag.yaml.
+# Load with:  apprun python run_c2_mutag_evaluation.py --config configs/mutag.cluster.yaml
+
+gdce_path: <GDCE_ROOT>   # only for dataset + (gine) GINE import
+ckpt: <GDCE_OUT>/2026-03-06/14-30-14-gcn_train_mutag_mol_gin/checkpoints/gcn_train_mutag_mol_gin/epoch=49.ckpt
+
+# --- Classifier: paper-style GCN trained on mutagenicity_mol ---
+# (eval forces self_loops='full' and auto-detects in_dim=13 from the dataset)
+classifier: gcn
+gcn_ckpt: <C2EXPLAINER_ROOT>/ckpt/paper_gcn_mutagenicity/gcn.pt

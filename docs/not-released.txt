@@ -1,0 +1,114 @@
+# What is deliberately NOT published, and why.
+#
+# Two files are published under a different name because their working-tree name
+# or their hardcoded paths would mislead a reader.  make_release.sh does the
+# rename and prints the sed rules it applied:
+#   src/smoke_build_dataset.py -> src/build_dataset.py
+#       it is not a smoke test, it is the dataset build step of the pipeline
+#   train_shared_judges.py     -> src/shared_judge/train_judges_nonmol.py
+#       moved next to train_judge.py, with the two hardcoded paths replaced by
+#       $GDCE_DATA / $GDCE_JUDGES and the import fixed for the new location
+#
+#
+# This file is the audit trail for the release: anybody (including a reviewer)
+# can check that nothing relevant to the paper was dropped, and that nothing
+# irrelevant was pushed.  Sizes are from 2026-11-05.
+
+## 1. Other datasets and the conference version of the method
+#
+# None of these are used anywhere in the paper.  They pull in psi4, pyemd and
+# the QM9/ZINC download paths and would be dead weight a reader has to rule out.
+
+src/counterfactual_qm9.py                   QM9 property targeting (FreeGress heritage)
+src/counterfactual_qm9_var.py
+src/counterfactual_zinc.py
+src/qm9_comparison.py
+src/qm9_logp.py
+src/qm9_logp_free.py
+src/zinc_free.py
+src/inversion_zinc.py
+src/inversion_aids.py                       AIDS was rejected by the shortcut screening (0.995 size/density accuracy)
+src/inversion_spmotif.py                    SPMotif: not in the submission
+src/inversion_nci1.py                       NCI1: removed from the paper, kept in paper/nci1_reserve/
+src/inversion_mutag_nitro.py                single-motif probes, superseded by the shared-judge protocol
+src/inversion_mutag_nitroso.py
+src/diagnose_aids_guidance.py
+src/screen_spmotif.py                       needs BA3_loc.py / synthetic_structsim.py from an external repo
+src/diffusion_model_discrete.py             the conference version's sampler; superseded by diffusion_planar_discrete.py
+src/diffusion_model_discrete_counterfactual.py
+src/diffusion/diffusion_utils_inversion.py  early draft of the inversion, unreferenced
+src/diffusion/layers.py                     unreferenced
+src/guidance/guidance_diffusion_model_discrete.py   classifier-BASED guidance (FreeGress); the paper is classifier-free
+src/guidance/main_guidance.py
+src/guidance/qm9_regressor_discrete.py
+src/guidance/train_qm9_regressor.py
+src/guidance/train_node_model.py
+src/models/Mutag_Classifier.py              unreferenced
+src/models/counterfactual.py                unreferenced
+src/models/GCN_community.py                 only used by trainGCN.py
+src/trainGCN.py                             trains the conference version's per-method LEConv oracle; every
+                                            classifier in the revised paper comes from shared_judge/train_judge.py
+configs/dataset/{aids,ba2motifs,imdb_binary,nci1,nci1_nofreq,planar_8,qm9,spmotif,zinc250k}.yaml
+configs/experiment/{aids,ba2motifs,imdb_binary,nci1,planar,qm9,spmotif,zinc250k,logp,guidance_*}*.yaml
+configs/experiment/gcn_train_*.yaml         belong to trainGCN.py
+
+## 2. Smoke tests and one-off diagnostics
+#
+# They were written to answer one question during development and hardcode the
+# answer's context.  Publishing them invites the reader to run them and get a
+# stale result.
+
+src/screen_gdce_csv.py
+src/shared_judge/smoke_datamodule.py
+src/shared_judge/smoke_relabel.py
+src/shared_judge/check_gdce_compat.py
+src/shared_judge/test_portability.py
+src/shared_judge/preflight_label_balance.py
+src/shared_judge/convert_d4_native.py       D4-specific format conversion, lives with the D4 adapter
+src/shared_judge/compare_methods.py         aggregator with the five baseline checkout paths hardcoded;
+                                            replaced by analysis/ + reproduce/
+scratch_aggregate_ablation.py
+verify_adapter.py
+run_adv_flip_all.py                         superseded by reproduce/06_table2_baselines.sh
+run_origclf_advflip.py                      ditto, for Section S3
+
+## 3. The trained diffusion models
+#
+# Deliberately not published. What determines them is: the shipped splits, the
+# shipped classifier each model is conditioned on, every hyperparameter in
+# configs/experiment/, and the container recipe. docs/training.md is the
+# instruction, including the checks by which a retrained model can be compared.
+# The shared classifiers themselves ARE published (judges/, 2.9 MB) -- they are
+# what makes a retrain comparable rather than merely similar.
+
+outputs/<date>/<time>-<name>/checkpoints/      1.4 GB for the six models
+
+## 4. Large files that are not inputs to any result
+
+src/metrics/clf_py27.pkl                    34 MB  DRD2 activity SVM from DiGress; only reachable through
+src/metrics/clf_py36.pkl                    34 MB  properties.drd2(), which the paper never calls
+data/                                      1.4 GB  raw + preprocessed datasets; see data/README.md in the release
+notebooks/                                  255 MB
+paper/                                      194 MB  manuscript, figures, wiki
+paper_overleaf_20261027/                    1.3 MB
+baselines/                                  1.1 GB  upstream clones; published as patches, see baselines/
+comparison_results/figures, */*.png,        25 MB   intermediate plots and notebooks
+  */*.ipynb
+out/, ckpt/, GoodSamples/, train.pt,                run artifacts
+  val.pt, test.pt, timer.dat
+vm/*.sif                                            container images (rebuild from vm/counter.def)
+spacetime_*.{pdf,png,svg,ipynb}                     illustrations for a different project
+Untitled.ipynb, main.aux, main.fdb_latexmk,         scratch
+  texput.*
+.idea/, .venv/, __pycache__/, .ipynb_checkpoints/
+
+## 5. Not published on purpose (not size, not relevance)
+
+reviews/                                    the review responses and the revised manuscript fragments.
+                                            reviews/analysis/*.py IS published, as analysis/ -- those are
+                                            the scripts that turn the run CSVs into the paper's tables.
+*_PLAN.md, graph_counterfactual.md,         internal planning notes
+  SHARED_JUDGE_PLAN.md, BASELINE_PLAN.md,
+  UCEXPLAINER_PLAN.md, RELEASE_PLAN.md
+data/mutagenicity_mol/raw/*.wrong.bak       the stale atom_decoder that mislabeled elements; shipping it
+                                            next to the correct one is a trap

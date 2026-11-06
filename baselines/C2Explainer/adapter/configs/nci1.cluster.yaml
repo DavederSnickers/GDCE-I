@@ -1,0 +1,9 @@
+# Cluster-specific overrides on top of nci1.yaml.
+# Load with:  apprun python run_c2_nci1_evaluation.py --config configs/nci1.cluster.yaml
+# Anything not set here is inherited from nci1.yaml.
+
+# Example: the GDCE checkout sits at a different path on the cluster
+gdce_path: <GDCE_ROOT>
+
+# Example: the checkpoint lives in shared storage
+ckpt: <GDCE_OUT>/2026-03-04/17-11-03-gcn_train_nci1_nofreq_gin/checkpoints/gcn_train_nci1_nofreq_gin/epoch=124.ckpt

@@ -1,0 +1,33 @@
+# XPlore (Beyond Edge Deletion, KDD'26) under the shared-judge protocol.
+#
+#   apprun python run_xplore_evaluation.py --config configs/benzene.xplore.yaml
+#
+# XPlore has nothing to train: it is a per-instance gradient search over a soft
+# edge mask, run against the classifier itself. So the only "model" here is the
+# shared judge every method in the comparison targets, and the run writes
+# cf_dump.jsonl in the schema the seed-1 control judge reads, so NA and NAFR can
+# be computed afterwards without re-generating the counterfactuals.
+
+gdce_path: <GDCE_ROOT>
+datadir: data/benzene/
+dataset_name: benzene
+molecular: True
+
+shared_judge_path: <GDCE_JUDGES>/judge_benzene_gcn
+
+# XPlore hyperparameters. `variant` picks alpha/K/update_node_feat off the
+# authors' own configs (XPlore_config/GRAPH/{MUTAG,BZR,AIDS}/*); beta and
+# gamma_edge are theirs too and identical across every chemical dataset.
+variant: xplore        # xplore | xplore+ | xplore++
+beta: 0.5
+gamma_edge: 0
+alpha: null            # null -> the variant's default (1.0 for xplore)
+K: null                # null -> the variant's default (500 for xplore)
+
+# Evaluation protocol, identical to GDCE-I and the other baselines.
+n_runs: 5
+n_samples_per_run: 100
+n_nodes: 25
+
+out_dir: xplore_benzene_results
+cuda: "0"

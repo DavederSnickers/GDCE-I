@@ -1,0 +1,6 @@
+# Cluster-specific overrides on top of mutag.yaml.
+# Load with:  apprun python run_rsgg_mutag_evaluation.py --config configs/mutag.cluster.yaml
+# Anything not set here is inherited from mutag.yaml.
+
+gdce_path: <GDCE_ROOT>
+ckpt: <GDCE_OUT>/2026-03-06/14-30-14-gcn_train_mutag_mol_gin/checkpoints/gcn_train_mutag_mol_gin/epoch=49.ckpt

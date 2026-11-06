@@ -1,0 +1,6 @@
+name:      UCExplainer
+upstream:  https://github.com/flaat/COMBINEX
+commit:    707aa65
+licence:   MIT
+provides:  Table 2 (UCExplainer), Section S3
+local dir: baselines/COMBINEX (not published)

@@ -1,0 +1,6 @@
+Files in adapter/ that are DERIVED FROM UPSTREAM CODE, not written by us.
+The patch removes the upstream original and the adapter supplies the extended
+version, so setup_baselines.sh produces the right tree either way.
+Upstream: https://github.com/Graph-and-Geometric-Learning/D4Explainer @ 997b4c7 -- licence: MIT
+
+  main.py

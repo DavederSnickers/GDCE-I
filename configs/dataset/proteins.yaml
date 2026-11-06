@@ -1,0 +1,3 @@
+name: proteins
+datadir: 'data/proteins/'
+pin_memory: False

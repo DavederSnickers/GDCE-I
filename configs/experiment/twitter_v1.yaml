@@ -1,0 +1,45 @@
+# @package _global_
+#
+# TWITTER v1 — conditional discrete diffusion on TWITTER-Real-Graph-Partial.
+# Nodes are words, edges co-occurrences. The 1323-word vocabulary is filtered at
+# 500 occurrences (238 types, 65031 graphs); marginals from data/twitter/raw/.
+#
+# graph_classifier_path must point at the judge trained with
+# +experiment=gcn_train_twitter before this is launched (label_source:
+# 'classifier' relabels the data with it).
+#
+general:
+    name: 'twitter-v1'
+    gpus: 1
+    wandb: 'disabled'
+    check_val_every_n_epochs: 2
+
+train:
+    n_epochs: 300
+    batch_size: 128
+    lr: 0.0002
+    ckpt_every_n_train_steps: 2
+    weight_decay: 1e-4
+    optimizer: adamw
+
+model:
+    type: 'discrete'
+    transition: 'marginal'
+    diffusion_steps: 500
+    diffusion_noise_schedule: 'cosine'
+    n_layers: 8
+    lambda_train: [5, 0]
+    extra_features: null
+    hidden_mlp_dims: { 'X': 256, 'E': 128, 'y': 256 }
+    hidden_dims: { 'dx': 256, 'de': 64, 'dy': 128, 'n_head': 8, 'dim_ffX': 256, 'dim_ffE': 128, 'dim_ffy': 256 }
+
+guidance:
+    guidance_target: ['motif']
+    p_uncond: 0.05
+    trainable_cf: True
+    guidance_medium: 'both'
+    s: 3
+    graph_classifier_path: '${oc.env:GDCE_JUDGES}/judge_twitter_gcn'   # -> outputs/<date>/<time>-gcn_train_twitter/checkpoints/...
+    label_source: 'classifier'
+    n_samples_per_test_molecule: 10
+    n_test_molecules_to_sample: 20

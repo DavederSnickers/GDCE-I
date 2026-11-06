@@ -1,0 +1,148 @@
+diff --git a/models/explainer_models.py b/models/explainer_models.py
+index 6e9e07b..369c1c2 100644
+--- a/models/explainer_models.py
++++ b/models/explainer_models.py
+@@ -1,4 +1,6 @@
+ from re import S
++import csv
++import os
+ import numpy as np
+ import torch
+ import math
+@@ -6,7 +8,7 @@ import tqdm
+ import sys
+ import matplotlib.pyplot as plt
+ import networkx as nx
+-from utils.common_utils import mutag_dgl_to_networkx, get_mutag_color_dict, ba_shapes_dgl_to_networkx
++from utils.common_utils import mutag_dgl_to_networkx, get_mutag_color_dict, ba_shapes_dgl_to_networkx, mutag_graph_to_smiles
+ 
+ 
+ class GraphExplainerEdge(torch.nn.Module):
+@@ -37,6 +39,7 @@ class GraphExplainerEdge(torch.nn.Module):
+                 exp_dict[gid] = masked_adj
+                 num_dict[gid] = exp_num
+         print('average number of exps:', sum(num_dict.values()) / len(num_dict.keys()))
++        self.write_results_csv(exp_dict, num_dict)
+         PN = self.compute_pn(exp_dict)
+         PS = self.compute_ps(exp_dict)
+         acc, pre, rec, f1 = self.compute_precision_recall(exp_dict)
+@@ -46,6 +49,41 @@ class GraphExplainerEdge(torch.nn.Module):
+         print('acc: ', acc, ' pre: ', pre, ' rec: ', rec, ' f1: ', f1)
+         return PN, PS, 2 * PN * PS / (PN + PS), sum(num_dict.values()) / len(num_dict.keys()), acc, pre, rec, f1
+ 
++    def write_results_csv(self, exp_dict, num_dict):
++        """Write one row per explained graph, including the original and the
++        counterfactual SMILES (left empty when no valid molecule could be
++        formed)."""
++        results_path = getattr(self.args, 'results_path', 'results_mutag.csv')
++        if not os.path.isabs(results_path):
++            results_path = os.path.join(self.args.model_path, results_path)
++        rows = []
++        for gid, masked_adj in exp_dict.items():
++            graph = self.G_dataset.graphs[gid]
++            masked_adj = masked_adj.detach().cpu()
++            if self.fix_exp:
++                thresh = masked_adj.flatten().sort(descending=True)[0][self.fix_exp + 1]
++            else:
++                thresh = self.args.mask_thresh
++            exp_adj = (masked_adj > thresh).float()  # explanation edges
++            weight = graph.edata['weight'].cpu()
++            cf_present = (weight - exp_adj).numpy()  # counterfactual: edges minus explanation
++            smiles_original = mutag_graph_to_smiles(graph)
++            smiles_cf = mutag_graph_to_smiles(graph, edge_mask=cf_present)
++            rows.append({
++                'gid': int(gid),
++                'exp_num': num_dict[gid],
++                'smiles_original': smiles_original if smiles_original is not None else '',
++                'smiles_counterfactual': smiles_cf if smiles_cf is not None else '',
++            })
++        with open(results_path, 'w', newline='') as f:
++            writer = csv.DictWriter(
++                f, fieldnames=['gid', 'exp_num', 'smiles_original', 'smiles_counterfactual'])
++            writer.writeheader()
++            writer.writerows(rows)
++        formed = sum(1 for r in rows if r['smiles_original'])
++        print('results written to %s (%d rows, %d original SMILES formed)'
++              % (results_path, len(rows), formed))
++
+     def explain(self, gid, ori_pred):
+         # only generate exps for the correct predictions for now (to be consistent with GNN Explainer).
+         explainer = ExplainModelGraph(
+diff --git a/utils/argument.py b/utils/argument.py
+index 3b442c4..274ba88 100644
+--- a/utils/argument.py
++++ b/utils/argument.py
+@@ -66,6 +66,8 @@ def arg_parse_exp_graph_mutag_0():
+     parser.add_argument("--gam", dest="gam", type=float, default=.5, help="margin value for bpr loss")
+     parser.add_argument("--mask_thresh", dest="mask_thresh", type=float, default=.5,
+                         help="threshold to convert relaxed adj matrix to binary")
++    parser.add_argument("--results_path", dest="results_path", type=str, default="results_mutag.csv",
++                        help="path to the results csv (relative paths go under model_path)")
+     return parser.parse_args()
+ 
+ 
+diff --git a/utils/common_utils.py b/utils/common_utils.py
+index aea4ff9..3277706 100644
+--- a/utils/common_utils.py
++++ b/utils/common_utils.py
+@@ -22,6 +22,60 @@ def mutag_dgl_to_networkx(dgl_G):
+     return nx_G
+ 
+ 
++def mutag_graph_to_smiles(dgl_G, edge_mask=None):
++    """Reconstruct a SMILES string from a Mutag molecule graph.
++
++    The Mutag preprocessing only keeps atom types and a plain adjacency, the
++    bond orders are lost. We therefore rebuild the molecule with single bonds
++    only and let RDKit fill the remaining valences with implicit hydrogens.
++
++    edge_mask: optional 1D array (same length / ordering as ``dgl_G.edata``)
++        selecting which edges are present. If None, all edges with weight > 0
++        are used (i.e. the original molecule).
++
++    Returns the canonical SMILES, or None if RDKit is unavailable or the
++    molecule cannot be sanitized (i.e. no valid molecule could be formed).
++    """
++    try:
++        from rdkit import Chem
++    except ImportError:
++        return None
++    component_dict = {0: 'C', 1: 'O', 2: 'Cl', 3: 'H', 4: 'N', 5: 'F', 6: 'Br', 7: 'S',
++                      8: 'P', 9: 'I', 10: 'Na', 11: 'K', 12: 'Li', 13: 'Ca'}
++    node_labels = dgl_G.ndata['feat'].numpy()
++    src = dgl_G.edges()[0].numpy()
++    dst = dgl_G.edges()[1].numpy()
++    weights = dgl_G.edata['weight'].numpy()
++    if edge_mask is None:
++        present = weights > 0
++    else:
++        present = np.asarray(edge_mask) > 0
++
++    mol = Chem.RWMol()
++    idx_map = {}
++    for n in range(node_labels.shape[0]):
++        sym = component_dict[int(np.argmax(node_labels[n]))]
++        idx_map[n] = mol.AddAtom(Chem.Atom(sym))
++    added = set()
++    for eid in range(len(src)):
++        if not present[eid]:
++            continue
++        a, b = int(src[eid]), int(dst[eid])
++        if a == b:
++            continue
++        key = (min(a, b), max(a, b))
++        if key in added:  # graph stores both directed edges, add bond once
++            continue
++        added.add(key)
++        mol.AddBond(idx_map[a], idx_map[b], Chem.BondType.SINGLE)
++    try:
++        m = mol.GetMol()
++        Chem.SanitizeMol(m)
++        return Chem.MolToSmiles(m)
++    except Exception:
++        return None
++
++
+ def get_mutag_color_dict():
+     mutage_color_dict = {'C': 'tab:orange', 'O': 'tab:gray', 'Cl': 'cyan', 'H': 'tab:blue', 'N': 'blue',
+                        'F': 'green', 'Br': 'y', 'S': 'm', 'P': 'red', 'I': 'tab:green', 'Na': 'tab: purple',

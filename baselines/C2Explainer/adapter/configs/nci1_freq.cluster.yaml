@@ -1,0 +1,19 @@
+# C2Explainer on NCI1-FREQ (Huang atom-freq>50 filter, 10 atom types) — cluster.
+# Uses C2's OWN paper oracle (PaperGCN via train_paper_gcn.py), per the baseline
+# policy (each method uses its own paper classifier, not GDCE's).
+# Load with: apprun python run_c2_nci1_evaluation.py --config configs/nci1_freq.cluster.yaml
+# Inherits everything not set here from configs/nci1.yaml.
+
+gdce_path: <GDCE_ROOT>
+gdce_dataset_name: nci1        # freq variant (10 atom types); vs 'nci1_nofreq' (37)
+datadir: data/nci1/            # relative to gdce_path
+
+# --- Classifier: C2's own paper-style GCN, trained on freq NCI1 ---
+classifier: gcn
+gcn_ckpt: ckpt/paper_gcn_nci1_freq/gcn_bn.pt
+gcn_in_dim: null               # auto-detect from dataset (=10)
+nhid: 20                       # paper exp1_3 default
+nout: 20
+batchnorm: true                # BatchNorm oracle (must match train_paper_gcn --batchnorm)
+
+out_dir: c2_nci1_freq_results

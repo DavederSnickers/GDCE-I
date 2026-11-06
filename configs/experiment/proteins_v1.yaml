@@ -1,0 +1,45 @@
+# @package _global_
+#
+# PROTEINS v1 — conditional discrete diffusion on PROTEINS (max_nodes=50).
+# Binary adjacency, 3 categorical node labels (helix / sheet / turn), no edge
+# types; marginals are loaded from data/proteins/raw/ by SpectreDatasetInfos.
+#
+# graph_classifier_path must point at the judge trained with
+# +experiment=gcn_train_proteins before this is launched (label_source:
+# 'classifier' relabels the data with it).
+#
+general:
+    name: 'proteins-v1'
+    gpus: 1
+    wandb: 'disabled'
+    check_val_every_n_epochs: 5
+
+train:
+    n_epochs: 600
+    batch_size: 128
+    lr: 0.0002
+    ckpt_every_n_train_steps: 5
+    weight_decay: 1e-4
+    optimizer: adamw
+
+model:
+    type: 'discrete'
+    transition: 'marginal'
+    diffusion_steps: 500
+    diffusion_noise_schedule: 'cosine'
+    n_layers: 8
+    lambda_train: [5, 0]
+    extra_features: null
+    hidden_mlp_dims: { 'X': 256, 'E': 128, 'y': 256 }
+    hidden_dims: { 'dx': 256, 'de': 64, 'dy': 128, 'n_head': 8, 'dim_ffX': 256, 'dim_ffE': 128, 'dim_ffy': 256 }
+
+guidance:
+    guidance_target: ['motif']
+    p_uncond: 0.05
+    trainable_cf: True
+    guidance_medium: 'both'
+    s: 3
+    graph_classifier_path: '${oc.env:GDCE_JUDGES}/judge_proteins_gcn'   # -> outputs/<date>/<time>-gcn_train_proteins/checkpoints/.../epoch=NNN.ckpt
+    label_source: 'classifier'
+    n_samples_per_test_molecule: 10
+    n_test_molecules_to_sample: 20

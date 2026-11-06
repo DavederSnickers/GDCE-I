@@ -1,0 +1,31 @@
+{
+  "num_features": 8,
+  "num_classes": 2,
+  "hidden": 128,
+  "num_layers": 3,
+  "edge_dim": 5,
+  "conv": "gine",
+  "dropout": 0.3,
+  "batchnorm": true,
+  "pooling": "mean",
+  "self_loops": "stripped on input; gcn adds one per node, gine adds none",
+  "logits": "raw (apply softmax/argmax yourself; NOT log_softmax)",
+  "label_source": "raw CSV y field (0/1 as preprocessed by GDCE)",
+  "dataset": "benzene",
+  "seed": 1,
+  "max_nodes": 50,
+  "selected_epoch": 15,
+  "cosine_lr": true,
+  "refit_train_val": true,
+  "lr": 0.001,
+  "train_acc": 1.0,
+  "val_acc": 1.0,
+  "test_acc": 1.0,
+  "n_train": 7178,
+  "n_val": 2393,
+  "n_test": 2393,
+  "train_label_counts": [
+    3614,
+    3564
+  ]
+}

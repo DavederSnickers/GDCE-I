@@ -1,0 +1,6 @@
+name:      XPlore
+upstream:  https://github.com/MarioTheOne/GRETEL
+commit:    fa60bd2
+licence:   GRETEL: MIT. XPlore itself: NONE, and the copy we received is not a git checkout
+provides:  Section S3 (XPlore)
+local dir: baselines/GRETEL (not published)

@@ -1,0 +1,31 @@
+{
+  "num_features": 13,
+  "num_classes": 2,
+  "hidden": 128,
+  "num_layers": 3,
+  "edge_dim": 0,
+  "conv": "gcn",
+  "dropout": 0.3,
+  "batchnorm": true,
+  "pooling": "mean",
+  "self_loops": "stripped on input; gcn adds one per node, gine adds none",
+  "logits": "raw (apply softmax/argmax yourself; NOT log_softmax)",
+  "label_source": "raw CSV y field (0/1 as preprocessed by GDCE)",
+  "dataset": "mutagenicity_mol",
+  "seed": 1,
+  "max_nodes": 50,
+  "selected_epoch": 195,
+  "cosine_lr": true,
+  "refit_train_val": true,
+  "lr": 0.001,
+  "train_acc": 0.8342448464450989,
+  "val_acc": 0.8396464646464646,
+  "test_acc": 0.8055555555555556,
+  "n_train": 2377,
+  "n_val": 792,
+  "n_test": 792,
+  "train_label_counts": [
+    1375,
+    1002
+  ]
+}

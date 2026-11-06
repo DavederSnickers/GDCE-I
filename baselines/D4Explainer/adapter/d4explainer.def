@@ -1,0 +1,40 @@
+Bootstrap: docker
+From: continuumio/miniconda3:latest
+
+%files
+    $PWD/requirements.txt requirements.txt
+
+%post
+    chmod 1777 /tmp
+    apt-get update && apt-get -y install libgl1
+    conda update -n base -c defaults conda -y
+    conda create -n d4explainer python=3.9 -y
+
+    # Source environment at runtime
+    echo ". /opt/conda/etc/profile.d/conda.sh" >> $SINGULARITY_ENVIRONMENT
+    echo "conda activate d4explainer" >> $SINGULARITY_ENVIRONMENT
+
+    # Activate the environment
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate d4explainer
+
+    # Install PyTorch 2.0.1 with CUDA 11.8 (supports A100 GPUs with sm_80)
+    pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
+
+    # Install PyG packages (compatible with PyTorch 2.0.1 + CUDA 11.8)
+    pip install torch-scatter -f https://data.pyg.org/whl/torch-2.0.1+cu118.html
+    pip install torch-sparse -f https://data.pyg.org/whl/torch-2.0.1+cu118.html
+    pip install torch-cluster -f https://data.pyg.org/whl/torch-2.0.1+cu118.html
+    pip install torch-geometric
+
+    # Install remaining packages from requirements.txt
+    pip install -r requirements.txt
+
+%environment
+    export LD_LIBRARY_PATH=/opt/conda/envs/d4explainer/lib:$LD_LIBRARY_PATH
+    export LD_PRELOAD=/opt/conda/envs/d4explainer/lib/libgomp.so
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate d4explainer
+
+%runscript
+    exec python "$@"

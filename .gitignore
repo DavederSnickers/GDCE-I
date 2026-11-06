@@ -1,0 +1,50 @@
+# Run outputs -----------------------------------------------------------------
+runs/
+outputs/
+../outputs/
+logs/
+logs2/
+wandb/
+*.log
+
+# Model weights and container images -------------------------------------------
+# No model weights are published; checkpoints/ is where the models you train land
+# (see checkpoints/README.md and docs/training.md).
+checkpoints/*
+!checkpoints/README.md
+*.ckpt
+*.sif
+*.pt
+
+# Datasets ---------------------------------------------------------------------
+# No dataset is distributed; `reproduce/... data` builds them.  Only the small
+# derived artifacts next to them belong in git (see data/README.md).
+data/*/processed/
+data/*/raw/TU/
+data/*/raw/*.csv
+*.wrong.bak
+
+# Python ----------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+env/
+
+# Editors and notebooks -------------------------------------------------------
+.idea/
+.vscode/
+.DS_Store
+.ipynb_checkpoints/
+
+# Marker of release/make_release.sh in the source tree ------------------------
+.gdce-release
+
+# Compiled helper -------------------------------------------------------------
+src/analysis/orca/orca
+src/analysis/orca/tmp*

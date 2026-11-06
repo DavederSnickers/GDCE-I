@@ -1,0 +1,873 @@
+diff --git a/config/explainer/combined.yaml b/config/explainer/combined.yaml
+index eb10937..480549d 100644
+--- a/config/explainer/combined.yaml
++++ b/config/explainer/combined.yaml
+@@ -1,2 +1,8 @@
+ name: combined
+ clip_grad_norm: 2.0
++# Weights for the node-feature and edge-attribute perturbation terms.
++# "None" activates the dynamic (1-alpha)/2 schedule; a literal 0 FREEZES the
++# corresponding parameter (the upstream default), reducing the method to pure
++# edge deletion. alpha (scheduler.initial_alpha) weights the edge term.
++beta: "None"
++p_lambda: "None"
+diff --git a/config/model/gcn.yaml b/config/model/gcn.yaml
+index b895ea9..19780a8 100755
+--- a/config/model/gcn.yaml
++++ b/config/model/gcn.yaml
+@@ -1,3 +1,4 @@
+ hidden_layers: [128, 128, 128]
+ dropout: 0.5
+ name: GCN
++batchnorm: false   # opt-in; enabled for NCI1-G in the cfg loaders (MUTAG-G stays off)
+diff --git a/src/datasets/dataset.py b/src/datasets/dataset.py
+index 580a36c..a501f35 100755
+--- a/src/datasets/dataset.py
++++ b/src/datasets/dataset.py
+@@ -20,6 +20,16 @@ class DataInfo:
+         self.discrete_mask = self.data.discrete_mask
+         self.min_range = self.data.min_range
+         self.max_range = self.data.max_range
++        # Edge-attribute metadata — only present for datasets that carry bond
++        # types (MUTAG-G, BENZENE-G). Their presence is what switches the
++        # GraphPerturber into edge-attribute mode and sizes the GINE encoder.
++        if hasattr(self.data, "discrete_edge_attr_mask"):
++            self.discrete_edge_attr_mask = self.data.discrete_edge_attr_mask
++            self.min_range_edges = self.data.min_range_edges
++            self.max_range_edges = self.data.max_range_edges
++            self.edge_attr_dim = self.data.discrete_edge_attr_mask.shape[0]
++        else:
++            self.edge_attr_dim = 0
+         del self.data
+ 
+     def num_classes(self):
+diff --git a/src/graph_level_explainer/explainer/combined/combined_explainer.py b/src/graph_level_explainer/explainer/combined/combined_explainer.py
+index 3e621dc..5fc0ff6 100755
+--- a/src/graph_level_explainer/explainer/combined/combined_explainer.py
++++ b/src/graph_level_explainer/explainer/combined/combined_explainer.py
+@@ -67,29 +67,48 @@ class CombinedExplainer(Explainer):
+         
+         self.optimizer.zero_grad()
+ 
+-        differentiable_output = self.graph_perturber.forward(graph.x, graph.batch) 
+-        model_out, V_pert, EP_x = self.graph_perturber.forward_prediction(graph.x, graph.batch) 
+-        
++        differentiable_output = self.graph_perturber.forward(graph.x, graph.batch)
++        model_out, V_pert, EP_x, edge_attr_pert = self.graph_perturber.forward_prediction(
++            graph.x, graph.batch
++        )
++
+         y_pred_new_actual = torch.argmax(model_out, dim=1)
+         y_pred_differentiable = torch.argmax(differentiable_output, dim=1)
+-        
+-        edge_loss, cf_edges = self.graph_perturber.edge_loss(graph)
++
++        edge_loss, cf_edges, keep_mask = self.graph_perturber.edge_loss(graph)
+         node_loss, _ = self.graph_perturber.node_loss(graph)
+         alpha = self.get_alpha(epoch, edge_loss, node_loss)
+         eta = ((y_pred_new_actual != graph.targets) or (graph.targets != y_pred_differentiable)).float()
+         loss_pred = torch.nn.functional.cross_entropy(differentiable_output, graph.targets.unsqueeze(0))
+-        loss = eta * loss_pred + (1 - alpha) * edge_loss + alpha * node_loss
+-        loss.backward()        
++
++        # alpha weights the EDGE term (upstream UCExplainer convention). beta and
++        # p_lambda weight node features and edge attributes; "None" hands them
++        # the dynamic (1-alpha)/2 schedule.
++        if self.graph_perturber.has_edge_attrs:
++            edge_attr_loss, _ = self.graph_perturber.edge_attr_loss(graph)
++            beta = self.cfg.explainer.beta if self.cfg.explainer.beta != "None" else ((1 - alpha) / 2)
++            p_lambda = self.cfg.explainer.p_lambda if self.cfg.explainer.p_lambda != "None" else ((1 - alpha) / 2)
++            loss = eta * loss_pred + alpha * edge_loss + beta * node_loss + p_lambda * edge_attr_loss
++        else:
++            beta = self.cfg.explainer.beta if self.cfg.explainer.beta != "None" else (1 - alpha)
++            loss = eta * loss_pred + alpha * edge_loss + beta * node_loss
++
++        loss.backward()
+         self.optimizer.step()
+         counterfactual = None
+ 
+         if y_pred_new_actual == graph.targets and loss.item() < self.best_loss:
+-            
++
++            # Slice the perturbed bond types with the very mask that produced
++            # cf_edges, so edge_index and edge_attr stay aligned.
++            cf_edge_attr = edge_attr_pert[keep_mask] if edge_attr_pert is not None else None
++
+             counterfactual = build_counterfactual_graph_gc(x=V_pert,
+-                                       edge_index=cf_edges, 
+-                                       graph=graph, 
+-                                       oracle=oracle, 
+-                                       output_actual=model_out, 
++                                       edge_index=cf_edges,
++                                       graph=graph,
++                                       oracle=oracle,
++                                       output_actual=model_out,
++                                       edge_attr=cf_edge_attr,
+                                        device=self.device)
+ 
+             self.best_loss = loss.item()
+diff --git a/src/graph_level_explainer/explainer/combined/graph_perturber.py b/src/graph_level_explainer/explainer/combined/graph_perturber.py
+index 05f5041..0ce09ab 100644
+--- a/src/graph_level_explainer/explainer/combined/graph_perturber.py
++++ b/src/graph_level_explainer/explainer/combined/graph_perturber.py
+@@ -1,128 +1,267 @@
+-from omegaconf import DictConfig
++import inspect
++from typing import Optional, Tuple
++
+ import torch
+-from ...perturber.pertuber import Perturber
+-from torch_geometric.data import Data   
+-from torch import Tensor
+-from torch import nn
+-from torch.nn.parameter import Parameter
+ import torch.nn.functional as F
+-from typing import Tuple
++from omegaconf import DictConfig
++from torch import Tensor, nn
++from torch.nn.parameter import Parameter
++from torch_geometric.data import Data
++
++from ...perturber.pertuber import Perturber
+ from ...utils.utils import discretize_to_nearest_integer
+ from src.datasets.dataset import DataInfo
+ 
++
+ class GraphPerturber(Perturber):
++    """Graph-level perturber: node features, edge weights and edge attributes.
++
++    Three learnable perturbations, each gated by its own weight in the config:
++
++    * ``P_x``    — node features            (weight ``explainer.beta``)
++    * ``EP_x``   — edge presence            (weight ``scheduler.initial_alpha``)
++    * ``E_attr`` — edge attributes / bonds  (weight ``explainer.p_lambda``)
++
++    A weight of exactly 0 freezes the corresponding parameter, which is how the
++    upstream default config (``beta: 0, p_lambda: 0``) reduces the method to
++    pure edge deletion.
++    """
++
++    def __init__(self,
++                 cfg: DictConfig,
++                 model: nn.Module,
++                 graph: Data,
++                 datainfo: DataInfo,
++                 device: str = "cuda") -> None:
+ 
+-    def __init__(self, 
+-                    cfg: DictConfig, 
+-                    model: nn.Module, 
+-                    graph: Data,
+-                    datainfo: DataInfo,
+-                    device: str = "cuda") -> None:
+-        
+         super().__init__(cfg=cfg, model=model)
+         self.device = torch.device("cuda" if torch.cuda.is_available() and cfg.device == "cuda" else "cpu")
+-        self.beta = 0.5
+-        self.EP_x = Parameter(torch.ones(len(graph.edge_index[0]), device=self.device))
++        self.beta = cfg.explainer.beta
+         self.graph_sample = graph
+         self.device = device
+-        
++
+         # Dataset characteristics
+         self.num_classes = datainfo.num_classes
+         self.num_nodes = graph.x.shape[0]
+         self.num_features = datainfo.num_features
+         self.min_range = datainfo.min_range.to(device)
+         self.max_range = datainfo.max_range.to(device)
+-        
++
++        # Capability flags: does the dataset carry edge attributes, and does the
++        # oracle actually consume them / edge weights?
++        self.has_features = True
++        self.has_edge_attrs = (
++            hasattr(datainfo, "discrete_edge_attr_mask")
++            and getattr(graph, "edge_attr", None) is not None
++        )
++        self._inspect_model_capabilities()
++
+         # Explainer characteristics
+         self.discrete_features_addition: bool = True
+         self.discrete_features_mask: Tensor = datainfo.discrete_mask.to(device)
+         self.continous_features_mask: Tensor = 1 - datainfo.discrete_mask.to(device)
+-        # Model's parameters
+-        self.P_x = Parameter(torch.zeros(self.num_nodes, self.num_features, device=self.device))
+-        
++
+         # Graph's components
+         self.edge_index = graph.edge_index
+-        self.x = graph.x         
+-        
+-        
+-    def discretize_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+-        """
+-        Discretizes the input tensor based on the following rules:
+-        - Values less than or equal to -0.5 are set to -1
+-        - Values equal to 0.5 are set to 1
+-        - All other values are set to 0
++        self.x = graph.x
+ 
+-        Args:
+-        tensor (torch.Tensor): The input tensor to be discretized.
++        # Learnable parameters
++        self.EP_x = Parameter(torch.ones(len(graph.edge_index[0]), device=self.device))
++        self.P_x = Parameter(torch.zeros(self.num_nodes, self.num_features, device=self.device))
++        self.perturbation_mask = self._get_node_to_block()
+ 
+-        Returns:
+-        torch.Tensor: The discretized tensor.
+-        """
+-        discretized_tensor = torch.where(tensor <= 0.5, 0, 1)
+-        return discretized_tensor.float()
+-    
+-            
+-    def forward(self, V_x, batch) -> Tensor:       
+-        """
+-        Forward pass for the graph perturber.
+-        This method perturbs the input features and passes them through the model.
+-        Args:
+-            V_x (Tensor): The input node features.
+-            batch (Tensor): The batch indices for the nodes.
+-        Returns:
+-            Tensor: The output of the model after applying the perturbations.
+-        """
+-        
++        if self.has_edge_attrs:
++            self._setup_edge_attribute_perturbations(datainfo, graph)
++
++        self._apply_parameter_gates()
++
++    # ------------------------------------------------------------------
++    # setup helpers
++    # ------------------------------------------------------------------
++
++    def _inspect_model_capabilities(self) -> None:
++        """Inspect the oracle's forward signature to see what it accepts."""
++        params = inspect.signature(self.model.forward).parameters
++        self.model_has_edge_weights = "edge_weights" in params
++        self.model_has_edge_attr = "edge_attr" in params
++
++    def _get_node_to_block(self, nodes_list: Optional[list] = None) -> Tensor:
++        """Mask with one row per node: a row of zeros blocks that node's features."""
++        if not nodes_list:
++            return torch.ones_like(self.x).long()
++        if max(nodes_list) >= self.x.shape[0]:
++            raise ValueError(f"The node {max(nodes_list)} cannot be turned off, it is not in the graph!")
++        mask = torch.ones_like(self.x)
++        mask[nodes_list] = 0
++        return mask.long()
++
++    def _get_edge_attr_to_block(self, graph: Data, edges_list: Optional[list] = None) -> Tensor:
++        """Mask with one row per edge: a row of zeros blocks that edge's attributes."""
++        if not edges_list:
++            return torch.ones_like(graph.edge_attr).long()
++        if max(edges_list) >= graph.edge_attr.shape[0]:
++            raise ValueError(f"The edge {max(edges_list)} cannot be turned off, it is not in the graph!")
++        mask = torch.ones_like(graph.edge_attr)
++        mask[edges_list] = 0
++        return mask.long()
++
++    def _setup_edge_attribute_perturbations(self, datainfo: DataInfo, graph: Data) -> None:
++        self.discrete_edge_attr_mask = datainfo.discrete_edge_attr_mask.to(self.device)
++        self.continuous_edge_attr_mask = 1 - datainfo.discrete_edge_attr_mask.to(self.device)
++        self.min_range_edges = datainfo.min_range_edges.to(self.device)
++        self.max_range_edges = datainfo.max_range_edges.to(self.device)
++        self.edge_perturbation_mask = self._get_edge_attr_to_block(graph)
++        self.E_attr = Parameter(torch.zeros_like(graph.edge_attr, device=self.device))
++
++    def _apply_parameter_gates(self) -> None:
++        """A zero weight freezes the matching parameter (upstream behaviour)."""
++        if self.cfg.explainer.beta == 0:
++            self.P_x.requires_grad = False
++        if self.has_edge_attrs and self.cfg.explainer.p_lambda == 0:
++            self.E_attr.requires_grad = False
++        if self.cfg.scheduler.initial_alpha == 0:
++            self.EP_x.requires_grad = False
++
++    # ------------------------------------------------------------------
++    # perturbation math
++    # ------------------------------------------------------------------
++
++    def discretize_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
++        """Binarise: values <= 0.5 become 0, everything above becomes 1."""
++        return torch.where(tensor <= 0.5, 0, 1).float()
++
++    def _compute_perturbed_features(self, V_x: Tensor) -> Tensor:
++        """Continuous (differentiable) node-feature perturbation."""
+         tanh_discrete_features = torch.tanh(self.P_x)
+-        perturbation_discrete_rescaling = self.min_range + (self.max_range - self.min_range) * tanh_discrete_features
+-        perturbed_discrete_features = perturbation_discrete_rescaling + V_x
+-        discrete_perturbation = self.discrete_features_mask * torch.clamp(perturbed_discrete_features, min=self.min_range, max=self.max_range)
+-        continuous_perturbation = self.continous_features_mask * torch.clamp((self.P_x + V_x), min=self.min_range, max=self.max_range)
+-        
+-        perturbed_features = discrete_perturbation + continuous_perturbation
+-
+-    
+-        return self.model(x=perturbed_features, edge_index=self.graph_sample.edge_index, batch=batch, edge_weights=torch.sigmoid(self.EP_x))
+-
+-    
+-    def forward_prediction(self, V_x, batch):
+-        
+-        discrete_perturbation = self.discrete_features_mask * discretize_to_nearest_integer(self.min_range + (self.max_range - self.min_range) * F.tanh(self.P_x) + V_x)
++        rescaled = self.min_range + (self.max_range - self.min_range) * tanh_discrete_features
++        discrete_perturbation = self.discrete_features_mask * torch.clamp(
++            rescaled * self.perturbation_mask + V_x, min=self.min_range, max=self.max_range
++        )
++        continuous_perturbation = self.continous_features_mask * torch.clamp(
++            self.P_x * self.perturbation_mask + V_x, min=self.min_range, max=self.max_range
++        )
++        return discrete_perturbation + continuous_perturbation
++
++    def _compute_discrete_feature_perturbations(self, V_x: Tensor) -> Tensor:
++        """Rounded node-feature perturbation used for the actual prediction."""
++        base = self.min_range + (self.max_range - self.min_range) * F.tanh(self.P_x)
++        discrete_perturbation = self.discrete_features_mask * discretize_to_nearest_integer(
++            base * self.perturbation_mask + V_x
++        )
+         discrete_perturbation = torch.clamp(discrete_perturbation, min=self.min_range, max=self.max_range)
+-        continuous_perturbation = self.continous_features_mask * torch.clamp((self.P_x + V_x), min=self.min_range, max=self.max_range)
+-        V_pert = discrete_perturbation + continuous_perturbation
+-        EP_x_discrete = self.discretize_tensor(torch.sigmoid(self.EP_x))
+-        out = self.model(V_pert, self.edge_index, batch, EP_x_discrete)          
+-        return out, V_pert, self.EP_x
+-    
+-    
+-    def edge_loss(self, graph: Data) -> Tuple[Tensor, Tensor]:
+-
+-        # Generate perturbed edge index (with edge weights)
+-        cf_edge_weights = torch.sigmoid(self.EP_x)  # Learnable edge weights (perturbations)
+-
+-        # Graph sparsity loss: Penalize large changes in edge weights
+-        sparsity_loss = torch.sum(torch.abs(cf_edge_weights - 1))  # Penalize deviations from original weights
+-        cf_edge_weights_discrete = self.discretize_tensor(cf_edge_weights)
+-        cf_edge_index = graph.edge_index[:, cf_edge_weights_discrete == 1]
+-        
+-        return sparsity_loss, cf_edge_index
+-
+-    def node_loss(self, graph: Data) -> Tuple[Tensor, dict, Tensor]:
+-        """
+-        Calculate the node loss for a given graph.
+-        This method computes the loss for discrete and continuous features of the nodes in the graph.
+-        The discrete feature loss is calculated using L1 loss, and the continuous feature loss is 
+-        calculated using Mean Squared Error (MSE) loss. The total loss is the sum of these two losses.
+-        Args:
+-            graph (Data): The input graph data containing node features.
+-        Returns:
+-            Tuple[Tensor, dict, Tensor]: A tuple containing the total loss, edge index, and any additional 
+-            information (if applicable).
++        continuous_perturbation = self.continous_features_mask * torch.clamp(
++            self.P_x * self.perturbation_mask + V_x, min=self.min_range, max=self.max_range
++        )
++        return discrete_perturbation + continuous_perturbation
++
++    def _compute_perturbed_edge_attributes(self) -> Optional[Tensor]:
++        """Continuous (differentiable) edge-attribute perturbation."""
++        if not self.model_has_edge_attr or not self.has_edge_attrs:
++            return None
++        scaled_discrete = (
++            self.min_range_edges
++            + (self.max_range_edges - self.min_range_edges) * torch.tanh(self.E_attr)
++        )
++        raw_edge_attr = (
++            self.discrete_edge_attr_mask
++            * (scaled_discrete * self.edge_perturbation_mask + self.graph_sample.edge_attr)
++            + self.continuous_edge_attr_mask
++            * (self.E_attr * self.edge_perturbation_mask + self.graph_sample.edge_attr)
++        )
++        return torch.clamp(raw_edge_attr, min=self.min_range_edges, max=self.max_range_edges)
++
++    def _compute_discrete_edge_attribute_perturbations(self) -> Optional[Tensor]:
++        """Rounded edge-attribute perturbation used for the actual prediction."""
++        if not self.model_has_edge_attr or not self.has_edge_attrs:
++            return None
++        edge_base = (
++            self.min_range_edges
++            + (self.max_range_edges - self.min_range_edges) * torch.tanh(self.E_attr)
++        )
++        edge_discrete = self.discrete_edge_attr_mask * discretize_to_nearest_integer(
++            edge_base * self.edge_perturbation_mask + self.graph_sample.edge_attr
++        )
++        edge_discrete = torch.clamp(edge_discrete, min=self.min_range_edges, max=self.max_range_edges)
++        edge_continuous = self.continuous_edge_attr_mask * torch.clamp(
++            self.E_attr * self.edge_perturbation_mask + self.graph_sample.edge_attr,
++            min=self.min_range_edges,
++            max=self.max_range_edges,
++        )
++        return edge_discrete + edge_continuous
++
++    # ------------------------------------------------------------------
++    # forward passes
++    # ------------------------------------------------------------------
++
++    def _model_arguments(self, x: Tensor, batch: Tensor,
++                         edge_weights: Optional[Tensor],
++                         edge_attr: Optional[Tensor]) -> dict:
++        arguments = {"x": x, "edge_index": self.graph_sample.edge_index, "batch": batch}
++        if self.model_has_edge_weights and edge_weights is not None:
++            arguments["edge_weights"] = edge_weights
++        if self.model_has_edge_attr and edge_attr is not None:
++            arguments["edge_attr"] = edge_attr
++        return arguments
++
++    def forward(self, V_x: Tensor, batch: Tensor) -> Tensor:
++        """Differentiable forward pass — drives the gradient."""
++        perturbed_features = self._compute_perturbed_features(V_x)
++        perturbed_edge_attr = self._compute_perturbed_edge_attributes()
++        edge_weights = torch.clamp(self.EP_x, 0, 1) if self.model_has_edge_weights else None
++        return self.model(**self._model_arguments(
++            perturbed_features, batch, edge_weights, perturbed_edge_attr
++        ))
++
++    def forward_prediction(self, V_x: Tensor, batch: Tensor):
++        """Discretised forward pass — decides whether a counterfactual was found."""
++        V_pert = self._compute_discrete_feature_perturbations(V_x)
++        EP_x_discrete = self.discretize_tensor(torch.clamp(self.EP_x, 0, 1))
++        perturbed_edge_attr = self._compute_discrete_edge_attribute_perturbations()
++        out = self.model(**self._model_arguments(
++            V_pert, batch, EP_x_discrete, perturbed_edge_attr
++        ))
++        return out, V_pert, self.EP_x, perturbed_edge_attr
++
++    # ------------------------------------------------------------------
++    # losses
++    # ------------------------------------------------------------------
++
++    def edge_loss(self, graph: Data) -> Tuple[Tensor, Tensor, Tensor]:
++        """Edge sparsity loss.
++
++        Returns (loss, cf_edge_index, keep_mask). The mask is returned so the
++        caller can slice the perturbed edge attributes with exactly the same
++        selection that produced cf_edge_index — otherwise bond types and edges
++        would fall out of sync.
+         """
++        cf_edge_weights = torch.clamp(self.EP_x, 0.0, 1.0)
++        sparsity_loss = torch.sum(torch.abs(cf_edge_weights - 1.0))
++        keep_mask = self.discretize_tensor(cf_edge_weights) == 1
++        cf_edge_index = graph.edge_index[:, keep_mask]
++        return sparsity_loss, cf_edge_index, keep_mask
++
++    def node_loss(self, graph: Data) -> Tuple[Tensor, Tensor]:
++        """Node-feature perturbation loss: L1 on discrete, MSE on continuous dims."""
++        loss_discrete = F.l1_loss(
++            graph.x * self.discrete_features_mask,
++            torch.clamp(self.discrete_features_mask * F.tanh(self.P_x) + graph.x,
++                        self.min_range, self.max_range),
++        )
++        loss_continue = F.mse_loss(
++            graph.x * self.continous_features_mask,
++            self.continous_features_mask * (self.P_x + graph.x),
++        )
++        return loss_discrete + loss_continue, self.edge_index
+ 
+-        loss_discrete = F.l1_loss(graph.x * self.discrete_features_mask, torch.clamp(self.discrete_features_mask * F.tanh(self.P_x) + graph.x, 0, 1))
+-        loss_continue = F.mse_loss(graph.x * self.continous_features_mask, self.continous_features_mask * (self.P_x + graph.x))
+-        loss_total = loss_discrete + loss_continue
+-        
+-        return loss_total, self.edge_index
+\ No newline at end of file
++    def edge_attr_loss(self, graph: Data) -> Tuple[Tensor, Tensor]:
++        """Edge-attribute perturbation loss: L1 on discrete, MSE on continuous dims."""
++        loss_discrete = F.l1_loss(
++            graph.edge_attr * self.discrete_edge_attr_mask,
++            torch.clamp(self.discrete_edge_attr_mask * F.tanh(self.E_attr) + graph.edge_attr,
++                        self.min_range_edges, self.max_range_edges),
++        )
++        loss_continue = F.mse_loss(
++            graph.edge_attr * self.continuous_edge_attr_mask,
++            self.continuous_edge_attr_mask * (self.E_attr + graph.edge_attr),
++        )
++        return loss_discrete + loss_continue, self.edge_index
+diff --git a/src/graph_level_explainer/utils/utils.py b/src/graph_level_explainer/utils/utils.py
+index f3efd14..484dc9f 100755
+--- a/src/graph_level_explainer/utils/utils.py
++++ b/src/graph_level_explainer/utils/utils.py
+@@ -1,3 +1,4 @@
++import inspect
+ import torch
+ import numpy as np
+ import pandas as pd
+@@ -293,7 +294,7 @@ def build_counterfactual_graph(x: Tensor, edge_index: Tensor, graph: Data, oracl
+     return counterfactual
+ 
+ 
+-def build_counterfactual_graph_gc(x: Tensor, edge_index: Tensor, graph: Data, oracle: nn.Module, output_actual: Tensor, device: str = "cuda") -> Data:
++def build_counterfactual_graph_gc(x: Tensor, edge_index: Tensor, graph: Data, oracle: nn.Module, output_actual: Tensor, edge_attr: Tensor = None, device: str = "cuda") -> Data:
+     """
+     Constructs a counterfactual graph based on the provided edge index, original graph, and results from an oracle model.
+     Args:
+@@ -308,11 +309,19 @@ def build_counterfactual_graph_gc(x: Tensor, edge_index: Tensor, graph: Data, or
+     """
+     
+     
+-    counterfactual = Data(x=x, 
+-                          edge_index=edge_index, 
++    # Edge-attribute-aware oracles need the counterfactual's own bond types for
++    # the embedding, otherwise the projection ignores what the explainer changed.
++    emb_kwargs = {}
++    if edge_attr is not None and "edge_attr" in inspect.signature(oracle.get_embedding_repr).parameters:
++        emb_kwargs["edge_attr"] = edge_attr
++
++    counterfactual = Data(x=x,
++                          edge_index=edge_index,
++                          edge_attr=edge_attr,
+                           y=torch.argmax(output_actual, dim=1),
+-                          x_projection=torch.mean(oracle.get_embedding_repr(x, edge_index, graph.batch), dim=0))
+-    
++                          x_projection=torch.mean(
++                              oracle.get_embedding_repr(x, edge_index, graph.batch, **emb_kwargs), dim=0))
++
+     return counterfactual
+ 
+     
+diff --git a/src/oracles/models/models.py b/src/oracles/models/models.py
+index f2abf65..41adb4c 100755
+--- a/src/oracles/models/models.py
++++ b/src/oracles/models/models.py
+@@ -1,7 +1,12 @@
++from typing import Optional
++
+ import torch
+ import torch.nn as nn
+ import torch.nn.functional as F
+-from torch_geometric.nn import GCNConv, GraphConv, ChebConv, global_mean_pool
++from torch_geometric.nn import (
++    GCNConv, GraphConv, ChebConv, global_mean_pool, global_add_pool,
++)
++from torch_geometric.nn.conv import MessagePassing
+ 
+ 
+ class GCN(nn.Module):
+@@ -216,14 +221,27 @@ class GCN_G(nn.Module):
+         # Output layer
+         self.output_layer = nn.Linear(cfg.model.hidden_layers[-1], num_classes)
+ 
++        # Optional BatchNorm (opt-in via cfg.model.batchnorm; default off so the
++        # existing MUTAG-G oracle is unaffected). One DISTINCT module per layer —
++        # never [BatchNorm(h)] * n, which would share running stats and collapse
++        # in eval mode.
++        self.use_bn = bool(getattr(cfg.model, "batchnorm", False))
++        self.bns = (
++            nn.ModuleList([nn.BatchNorm1d(h) for h in cfg.model.hidden_layers])
++            if self.use_bn else None
++        )
++
+     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor, edge_weights: torch.Tensor = None) -> torch.Tensor:
+-        for layer in self.layers:
++        for i, layer in enumerate(self.layers):
+             if edge_weights is not None:
+-                x = F.relu(layer(x, edge_index, edge_weight=edge_weights))
++                x = layer(x, edge_index, edge_weight=edge_weights)
+             else:
+-                x = F.relu(layer(x, edge_index))
++                x = layer(x, edge_index)
++            if self.use_bn:
++                x = self.bns[i](x)
++            x = F.relu(x)
+             x = F.dropout(x, self.dropout, training=self.training)
+-        
++
+         # Global pooling
+         x = global_mean_pool(x, batch)  # Replace with global_max_pool if needed
+         x = self.output_layer(x)
+@@ -294,11 +312,12 @@ class ChebNet_G(nn.Module):
+         for layer in self.layers:
+             x = F.relu(layer(x, edge_index))
+             x = F.dropout(x, self.dropout, training=self.training)
+-        
++
+         # Global pooling for graph-level representation
+         x = global_mean_pool(x, batch)  # Replace with global_max_pool if needed
+         return x
+ 
++
+ class GraphConvNet_G(nn.Module):
+     def __init__(self, num_features: int, num_classes: int, cfg):
+         super(GraphConvNet_G, self).__init__()
+@@ -346,4 +365,121 @@ class GraphConvNet_G(nn.Module):
+         
+         # Global pooling for graph-level representation
+         x = global_mean_pool(x, batch)  # Replace with global_max_pool if needed
+-        return x
+\ No newline at end of file
++        return x
++
++class CustomGINEConv(MessagePassing):
++    """GINE layer that projects the central node features and the aggregated
++    messages to a common dimension before combining them.
++
++    Messages are built from [x_j || edge_attr] when edge attributes are present,
++    and scaled by edge_weight so the explainer can soft-mask edges.
++    """
++
++    def __init__(self, network: nn.Module, in_channels: int, out_channels: int,
++                 eps: float = 0., train_eps: bool = False, **kwargs):
++        super().__init__(aggr='add', **kwargs)
++        self.nn = network
++        self.in_channels = in_channels
++        self.out_channels = out_channels
++
++        # Projects the central node's features to out_channels.
++        self.lin = nn.Linear(in_channels, out_channels)
++
++        self.initial_eps = eps
++        if train_eps:
++            self.eps = torch.nn.Parameter(torch.Tensor([eps]))
++        else:
++            self.register_buffer('eps', torch.Tensor([eps]))
++
++    def forward(self, x: torch.Tensor, edge_index: torch.Tensor,
++                edge_attr: Optional[torch.Tensor] = None,
++                edge_weight: Optional[torch.Tensor] = None) -> torch.Tensor:
++        x_proj = self.lin(x)
++        aggr_out = self.propagate(edge_index, x=x, edge_attr=edge_attr,
++                                  edge_weight=edge_weight)
++        return (1 + self.eps) * x_proj + aggr_out
++
++    def message(self, x_j: torch.Tensor, edge_attr: Optional[torch.Tensor],
++                edge_weight: Optional[torch.Tensor]) -> torch.Tensor:
++        msg_input = x_j
++        if edge_attr is not None:
++            msg_input = torch.cat([x_j, edge_attr], dim=1)
++
++        msg = self.nn(msg_input)
++
++        if edge_weight is not None:
++            msg = msg * edge_weight.view(-1, 1)
++
++        return msg
++
++
++class GINENet_G(nn.Module):
++    """Graph-level GINE oracle (COMBINEX/UCExplainer paper architecture).
++
++    Layer 0 is a CustomGINEConv consuming edge attributes; the remaining layers
++    are GCNConv. Pooling is global_add_pool, matching the reference code.
++
++    edge_attr_dim=0 (e.g. NCI1, which carries no bond types) drops the
++    edge-feature concatenation, so one class serves every dataset — the paper's
++    default is `model: gine` for all of them.
++    """
++
++    def __init__(self, num_features: int, num_classes: int, cfg,
++                 edge_attr_dim: int = 0):
++        super(GINENet_G, self).__init__()
++        self.layers = nn.ModuleList()
++        self.dropout = cfg.model.dropout
++        self.edge_attr_dim = int(edge_attr_dim)
++        hidden = cfg.model.hidden_layers
++
++        # Messages are built from [x_j || edge_attr], so the MLP input widens
++        # by edge_attr_dim.
++        mlp_input_dim = num_features + max(self.edge_attr_dim, 0)
++        message_mlp = nn.Sequential(
++            nn.Linear(mlp_input_dim, hidden[0]),
++            nn.ReLU(),
++            nn.Linear(hidden[0], hidden[0]),
++        )
++        self.layers.append(CustomGINEConv(
++            network=message_mlp,
++            in_channels=num_features,
++            out_channels=hidden[0],
++        ))
++
++        for i in range(1, len(hidden)):
++            self.layers.append(GCNConv(hidden[i - 1], hidden[i]))
++
++        self.output_layer = nn.Linear(hidden[-1], num_classes)
++
++    def _propagate(self, x: torch.Tensor, edge_index: torch.Tensor,
++                   edge_attr: Optional[torch.Tensor] = None,
++                   edge_weights: Optional[torch.Tensor] = None) -> torch.Tensor:
++        # edge_attr is only consumed by the GINE layer; the GCNConv layers take
++        # the (soft) edge weights so the explainer's mask stays differentiable
++        # all the way through.
++        for layer in self.layers:
++            if isinstance(layer, CustomGINEConv):
++                x = layer(x, edge_index, edge_attr=edge_attr, edge_weight=edge_weights)
++            elif edge_weights is not None:
++                x = layer(x, edge_index, edge_weight=edge_weights)
++            else:
++                x = layer(x, edge_index)
++            x = F.relu(x)
++            x = F.dropout(x, self.dropout, training=self.training)
++        return x
++
++    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor,
++                edge_attr: Optional[torch.Tensor] = None,
++                edge_weights: Optional[torch.Tensor] = None) -> torch.Tensor:
++        x = self._propagate(x, edge_index, edge_attr, edge_weights)
++        x = global_add_pool(x, batch)
++        x = self.output_layer(x)
++        return F.log_softmax(x, dim=1)
++
++    def get_embedding_repr(self, x: torch.Tensor, edge_index: torch.Tensor,
++                           batch: torch.Tensor,
++                           edge_attr: Optional[torch.Tensor] = None,
++                           edge_weights: Optional[torch.Tensor] = None) -> torch.Tensor:
++        """Get the graph-level embedding representation (pre-classifier)."""
++        x = self._propagate(x, edge_index, edge_attr, edge_weights)
++        return global_add_pool(x, batch)
+diff --git a/src/oracles/train/train.py b/src/oracles/train/train.py
+index 79739ad..3ef0302 100755
+--- a/src/oracles/train/train.py
++++ b/src/oracles/train/train.py
+@@ -1,3 +1,5 @@
++import inspect
++
+ import numpy as np
+ from omegaconf import DictConfig
+ import torch
+@@ -33,6 +35,15 @@ class GraphTrainer:
+ 		self.loss = loss
+ 		self.train_loader = DataLoader(dataset.dataset[dataset.train_mask], batch_size=cfg.trainer.batch_size, shuffle=True)
+ 		self.test_loader = DataLoader(dataset.dataset[dataset.test_mask], batch_size=cfg.trainer.batch_size, shuffle=False)
++		# Edge-attribute-aware oracles (GINE) must be fed the bond types during
++		# training, otherwise they'd learn a binary-adjacency model and the
++		# explainer's edge-attribute perturbations would be no-ops at eval time.
++		self.model_takes_edge_attr = "edge_attr" in inspect.signature(self.model.forward).parameters
++
++	def _forward(self, data):
++		if self.model_takes_edge_attr and getattr(data, "edge_attr", None) is not None:
++			return self.model(data.x, data.edge_index, data.batch, edge_attr=data.edge_attr)
++		return self.model(data.x, data.edge_index, data.batch)
+ 
+ 	def _train(self, epoch: int):
+ 		self.metric.reset()
+@@ -41,7 +52,7 @@ class GraphTrainer:
+ 		for data in self.train_loader:
+ 			data = data.to(self.device)
+ 			self.optimizer.zero_grad()
+-			output = self.model(data.x, data.edge_index, data.batch)
++			output = self._forward(data)
+ 			loss_train = self.loss(output, data.y)
+ 			loss_train.backward()
+ 			clip_grad_norm_(self.model.parameters(), self.cfg.trainer.clip)
+@@ -58,7 +69,7 @@ class GraphTrainer:
+ 		with torch.no_grad():
+ 			for data in self.test_loader:
+ 				data = data.to(self.device)
+-				output = self.model(data.x, data.edge_index, data.batch)
++				output = self._forward(data)
+ 				loss_test = self.loss(output, data.y)
+ 				total_loss += loss_test.item()
+ 				y_pred = torch.argmax(output, dim=1)
+diff --git a/src/utils/dataset.py b/src/utils/dataset.py
+index 8ee19ca..30b4d7f 100755
+--- a/src/utils/dataset.py
++++ b/src/utils/dataset.py
+@@ -371,16 +371,83 @@ def get_dataset(dataset_name: str = None, test_size: float = 0.2)->Data:
+         train_mask[train_index] = True
+         test_mask[test_index] = True
+               
+-        return Data(dataset=dataset, train_mask=train_mask, test_mask=test_mask, discrete_mask=discrete_mask, min_range=min_range, max_range=max_range)                
+-        
++        return Data(dataset=dataset, train_mask=train_mask, test_mask=test_mask, discrete_mask=discrete_mask, min_range=min_range, max_range=max_range)
++
++    elif dataset_name in ("MUTAG-G", "NCI1-G", "BENZENE-G",
++                          "PROTEINS-GDCE", "TWITTER-G"):
++        # NOTE: "PROTEINS-GDCE" is deliberately NOT "PROTEINS-G" — that name is
++        # taken above by the raw TUDataset PROTEINS_full loader, which uses a
++        # different split and a different node-feature encoding. Mixing them
++        # would silently compare methods on two different datasets.
++        # GDCE-preprocessed CSVs (frequency / size-filtered, remapped node types).
++        # Default raw_root points to the cluster path; override via env var
++        # COMBINEX_GDCE_DATA_ROOT for local testing or alternative layouts.
++        return _get_gdce_csv_dataset(dataset_name)
++
+     else:
+         raise Exception("Choose a valid dataset!")
+     
+     
+ 
++def _get_gdce_csv_dataset(dataset_name: str) -> Data:
++    """Load a GDCE-preprocessed CSV dataset (Mutagenicity-mol / NCI1-nofreq).
++
++    The raw CSVs are expected at
++        <COMBINEX_GDCE_DATA_ROOT>/<gdce_name>/raw/{train,val,test}.csv
++    where COMBINEX_GDCE_DATA_ROOT defaults to the cluster path
++        <GDCE_DATA>
++
++    Returns a Data wrapper whose `.dataset` attribute is the PyG InMemoryDataset
++    (compatible with the AIDS-G / PROTEINS-G branches above).
++    """
++    from src.datasets.gdce_csv_dataset import GDCECsvGraphDataset
++
++    # NCI1-G -> "nci1" (freq: Huang atom-freq>50 filter, 10 atom types) for the
++    # paper's NCI1 comparison. Was "nci1_nofreq" (37 types) previously.
++    name_to_gdce = {"MUTAG-G": "mutagenicity_mol", "NCI1-G": "nci1",
++                    "BENZENE-G": "benzene",
++                    # Non-molecular shared-judge datasets (binary adjacency,
++                    # num_edge_types == 0 — same shape as NCI1-G).
++                    "PROTEINS-GDCE": "proteins", "TWITTER-G": "twitter"}
++    gdce_name = name_to_gdce[dataset_name]
++
++    default_root = "<GDCE_DATA>"
++    data_root = os.environ.get("COMBINEX_GDCE_DATA_ROOT", default_root)
++    root = os.path.join(data_root, gdce_name)
++
++    dataset = GDCECsvGraphDataset(root=root, dataset_name=gdce_name, max_nodes=50)
++
++    # All node features are one-hot atom types → fully discrete.
++    discrete_mask = torch.ones(dataset.num_node_types, dtype=torch.float)
++    # One-hot ranges are trivially [0, 1] per dimension.
++    min_range = torch.zeros(dataset.num_node_types)
++    max_range = torch.ones(dataset.num_node_types)
++
++    kwargs = dict(
++        dataset=dataset,
++        train_mask=dataset.train_mask,
++        test_mask=dataset.test_mask,
++        discrete_mask=discrete_mask,
++        min_range=min_range,
++        max_range=max_range,
++    )
++
++    # Bond types are one-hot too (MUTAG-G / BENZENE-G: 5 classes). NCI1 has
++    # num_edge_types == 0 and stays a binary-adjacency dataset, so we omit the
++    # edge-attribute metadata entirely there.
++    if dataset.num_edge_types > 0:
++        kwargs.update(
++            discrete_edge_attr_mask=torch.ones(dataset.num_edge_types, dtype=torch.float),
++            min_range_edges=torch.zeros(dataset.num_edge_types),
++            max_range_edges=torch.ones(dataset.num_edge_types),
++        )
++
++    return Data(**kwargs)
++
++
+ if __name__ == "__main__":
+-    
+-    
++
++
+     data = get_dataset("PROTEINS_G")
+-    
++
+     print(data)
+\ No newline at end of file
+diff --git a/src/utils/models.py b/src/utils/models.py
+index 7d11efd..0ca4449 100644
+--- a/src/utils/models.py
++++ b/src/utils/models.py
+@@ -1,5 +1,7 @@
+ from torch import nn
+-from src.oracles.models.models import GCN, ChebNet, GCN_G, ChebNet_G, GraphConvNet, GraphConvNet_G
++from src.oracles.models.models import (
++    GCN, ChebNet, GCN_G, ChebNet_G, GraphConvNet, GraphConvNet_G, GINENet_G,
++)
+ from typing import Union
+ 
+ 
+@@ -23,6 +25,9 @@ def get_model(name: str, task: str) -> Union[GCN, ChebNet]:
+       
+     elif name == "GraphConv" and task == "Graph":
+         return GraphConvNet_G
+-    
++
++    elif name == "GINE" and task == "Graph":
++        return GINENet_G
++
+     else:
+         raise ValueError(f"Model not implemented {name}")
+\ No newline at end of file

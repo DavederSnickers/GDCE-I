@@ -1,0 +1,254 @@
+diff --git a/src/explainer/explainer_rsgg_ce.py b/src/explainer/explainer_rsgg_ce.py
+index 773c79c..1194f26 100644
+--- a/src/explainer/explainer_rsgg_ce.py
++++ b/src/explainer/explainer_rsgg_ce.py
+@@ -34,6 +34,7 @@ class GraphCounteRGANExplainer(Explainer):
+                n_features=4,
+                hidden_dim=4,
+                fold_id=0,
++               epochs=None,
+                sampling_iterations=10,
+                lr_generator=0.001,
+                lr_discriminator=0.001,
+@@ -50,6 +51,11 @@ class GraphCounteRGANExplainer(Explainer):
+     self.n_nodes = n_nodes
+     self.device = "cuda" if torch.cuda.is_available() else "cpu"
+     self.training_iterations = training_iterations
++    # When set, the per-class fit runs `epochs` full passes over the generator's
++    # training subset (batch_size is hard-wired to 1), i.e. the effective number
++    # of single-graph updates is epochs * len(generator_data). Overrides the flat
++    # `training_iterations` count, which is < 1 epoch on large datasets.
++    self.epochs = epochs
+     
+     self.explainer_store_path = explainer_store_path
+     self.fold_id = fold_id
+@@ -91,12 +97,17 @@ class GraphCounteRGANExplainer(Explainer):
+       new_instance = new_dataset.instances[-1]
+       #######################################################
+       batch = TorchGeometricDataset.to_geometric(new_instance)
++      batch_x = batch.x.to(self.device)
++      batch_edge_index = batch.edge_index.to(self.device)
++      batch_edge_attr = batch.edge_attr.to(self.device)
+       embedded_features, edge_probs = dict(), dict()
+       for i, explainer in enumerate(self.explainers):
+-        features, _, probs = explainer.generator(batch.x, batch.edge_index, batch.edge_attr)
+-        embedded_features[i] = features
+-        edge_probs[i] = probs
+-        
++        features, _, probs = explainer.generator(batch_x, batch_edge_index, batch_edge_attr)
++        # the samplers operate on CPU tensors / numpy, so move generator
++        # outputs back to the CPU before handing them over
++        embedded_features[i] = features.cpu()
++        edge_probs[i] = probs.cpu()
++
+       cf_instance = self.sampler.sample(new_instance, oracle, **{'embedded_features': embedded_features,
+                                                              'edge_probabilities': edge_probs,
+                                                              'edge_index': batch.edge_index})
+@@ -120,6 +131,7 @@ class GraphCounteRGANExplainer(Explainer):
+   def fit(self, oracle: Oracle, dataset : Dataset, fold_id=0):
+     explainer_name = f'graph_countergan_fit_on_{dataset.name}_fold_id_{fold_id}'\
+       + f'_lr_gen_{self.lr_generator}_lr_discr_{self.lr_discriminator}_epochs_{self.training_iterations}'\
++        +f'_epochsparam_{self.epochs}'\
+         +f'_sampl_iters_{self.sampling_iterations}'
+         
+     explainer_uri = os.path.join(self.explainer_store_path, explainer_name)
+@@ -164,9 +176,16 @@ class GraphCounteRGANExplainer(Explainer):
+     self._logger.info(f'Training for desired label = {desired_label}')
+     self._logger.info("In the FIT Function.")
+     generator_loader, discriminator_loader = self.transform_data(dataset, oracle, class_to_explain=desired_label)
++    # batch_size is hard-wired to 1, so one iteration == one single-graph update.
++    # With `epochs` set, scale the loop to that many full passes over the
++    # generator's (per-class) training subset; otherwise fall back to the flat count.
++    n_gen_graphs = len(generator_loader.dataset)
++    n_iterations = self.epochs * n_gen_graphs if self.epochs else self.training_iterations
+     generator_loader = self._infinite_data_stream(generator_loader)
+     discriminator_loader = self._infinite_data_stream(discriminator_loader)
+-    self._logger.info("Laded Data.")
++    self._logger.info(
++        f"Laded Data. desired_label={desired_label} gen_graphs={n_gen_graphs} "
++        f"iterations={n_iterations} (epochs={self.epochs})")
+     discriminator_optimizer = torch.optim.SGD(countergan.discriminator.parameters(), lr=self.lr_discriminator)
+         
+     countergan_optimizer = torch.optim.SGD(countergan.generator.parameters(), lr=self.lr_generator)
+@@ -174,7 +193,7 @@ class GraphCounteRGANExplainer(Explainer):
+     loss_discriminator = nn.BCELoss()
+     loss_countergan = nn.BCELoss()
+ 
+-    for iteration in range(self.training_iterations):
++    for iteration in range(n_iterations):
+       G_losses, D_losses = [], []
+ 
+       if iteration > 0:
+@@ -196,23 +215,24 @@ class GraphCounteRGANExplainer(Explainer):
+       fake_features, fake_edge_index, fake_edge_attr, _ = self.__format_batch(next(generator_loader))
+       _, fake_edge_index, edge_probs = countergan.generator(fake_features, fake_edge_index, fake_edge_attr)
+       # get the real and fake labels
+-      y_batch = torch.cat([torch.ones((self.batch_size,)), torch.zeros((self.batch_size,))], dim=0)
++      y_batch = torch.cat([torch.ones((self.batch_size,)), torch.zeros((self.batch_size,))], dim=0).to(self.device)
+       #######################################################################
+       # get the oracle's predictions
+       oracle_scores = []
+       inst1, inst2 = DataInstance(-1), DataInstance(-1)
+-      inst1.from_numpy_array(rebuild_adj_matrix(len(features), edge_index, edge_attr).numpy())
+-      inst2.from_numpy_array(rebuild_adj_matrix(len(fake_features), fake_edge_index, fake_edge_attr).numpy())
++      inst1.from_numpy_array(rebuild_adj_matrix(len(features), edge_index, edge_attr).cpu().numpy())
++      inst2.from_numpy_array(rebuild_adj_matrix(len(fake_features), fake_edge_index, fake_edge_attr).cpu().numpy())
+       oracle_scores = [oracle.predict_proba(inst)[1-desired_label] for inst in [inst1, inst2]]
+       # The following update to the oracle scores is needed to have
+       # the same order of magnitude between real and generated sample losses
+       oracle_scores = np.array(oracle_scores, dtype=float).squeeze()
+-      real_samples = torch.where(y_batch == 1.)
++      y_batch_np = y_batch.cpu().numpy()
++      real_samples = np.where(y_batch_np == 1.)
+       average_score_real_samples = np.mean(oracle_scores[real_samples])
+       if average_score_real_samples != 0:
+           oracle_scores[real_samples] /= average_score_real_samples
+-      
+-      fake_samples = torch.where(y_batch == 0.)
++
++      fake_samples = np.where(y_batch_np == 0.)
+       oracle_scores[fake_samples] = 1.
+       
+       #######################################################################
+@@ -220,7 +240,7 @@ class GraphCounteRGANExplainer(Explainer):
+       real_pred = countergan.discriminator(features, edge_index, edge_attr).expand(1)
+       fake_pred = countergan.discriminator(fake_features, fake_edge_index, fake_edge_attr).expand(1)
+       y_pred = torch.cat([real_pred, fake_pred])
+-      loss = torch.mean(loss_discriminator(y_pred.squeeze().double(), y_batch.double()) * torch.tensor(oracle_scores, dtype=torch.float))
++      loss = torch.mean(loss_discriminator(y_pred.squeeze().double(), y_batch.double()) * torch.tensor(oracle_scores, dtype=torch.float, device=self.device))
+               
+       D_losses.append(loss.item())
+       loss.backward()
+@@ -235,7 +255,7 @@ class GraphCounteRGANExplainer(Explainer):
+       ## Update G network: maximize log(D(G(z)))
+       # generator data (fake batch)
+       fake_features, fake_edge_index, fake_edge_attr, _ = self.__format_batch(next(generator_loader))
+-      y_fake = torch.ones((self.batch_size,))
++      y_fake = torch.ones((self.batch_size,)).to(self.device)
+       output = countergan(fake_features, fake_edge_index, fake_edge_attr)
+       # calculate the loss
+       
+@@ -402,7 +422,7 @@ class GCNGeneratorEncoder(nn.Module):
+     
+     
+ def rebuild_adj_matrix(num_nodes: int, edge_indices: Tensor, edge_weight: Tensor) -> Tensor:
+-    truth = torch.zeros(size=(num_nodes, num_nodes)).double()
++    truth = torch.zeros(size=(num_nodes, num_nodes), device=edge_weight.device).double()
+     truth[edge_indices[0,:], edge_indices[1,:]] = edge_weight
+     truth[edge_indices[1,:], edge_indices[0,:]] = edge_weight
+     return truth
+\ No newline at end of file
+diff --git a/src/utils/samplers/partial_order_samplers.py b/src/utils/samplers/partial_order_samplers.py
+index 5a295be..8d0c45f 100644
+--- a/src/utils/samplers/partial_order_samplers.py
++++ b/src/utils/samplers/partial_order_samplers.py
+@@ -1,3 +1,4 @@
++import os
+ from types import SimpleNamespace
+ from typing import List
+ 
+@@ -15,23 +16,32 @@ class PositiveAndNegativeEdgeSampler(Sampler):
+     def __init__(self, sampling_iterations):
+         super().__init__()
+         self._name = 'positive_and_negative_edge_sampler'
+-        self.sampling_iterations = sampling_iterations      
+-          
++        self.sampling_iterations = sampling_iterations
++        # --- diagnostics (no behavioural effect) ---
++        # On by default while debugging proximity; set RSGG_SAMPLER_DIAG=0 to silence.
++        self.diag = os.environ.get('RSGG_SAMPLER_DIAG', '1') == '1'
++        self.stats = {'subset': 0, 'fallback': 0, 'failed': 0}
++        if self.diag:
++            print("[SAMPLER] diagnostics ENABLED (partial_order_samplers instrumented build)")
++
+     def sample(self, instance: DataInstance, oracle: Oracle, **kwargs) -> List[DataInstance]:
+         kwargs = SimpleNamespace(**kwargs)
+-        
++
+         edge_probs = kwargs.edge_probabilities
+         embedded_features = kwargs.embedded_features
+         edge_list = kwargs.edge_index
+-        
++
+         pred_label = oracle.predict(instance)
+-        
++
+         edge_probs = edge_probs.get(pred_label)
+         embedded_features = embedded_features.get(pred_label)
+-                
++
++        n_nodes = instance.graph.number_of_nodes()
+         edge_num = instance.graph.number_of_edges()
+-        cf_instance = self.__sample(instance, embedded_features, edge_probs[edge_list], edge_list, num_samples=edge_num) 
++        cf_instance = self.__sample(instance, embedded_features, edge_probs[edge_list], edge_list, num_samples=edge_num)
+         if oracle.predict(cf_instance) != oracle.predict(instance):
++            self.stats['subset'] += 1
++            self._diag('subset', n_nodes, edge_num, cf_instance, fb_iter=0)
+             return cf_instance
+         else:
+             # get the "negative" edges that aren't estimated
+@@ -39,11 +49,31 @@ class PositiveAndNegativeEdgeSampler(Sampler):
+             edge_probs = torch.from_numpy(np.array([1 / len(missing_edges) for _ in range(len(missing_edges))]))
+             # check sampling for sampling_iterations
+             # and see if we find a valid counterfactual
+-            for _ in range(self.sampling_iterations):
++            for it in range(self.sampling_iterations):
+                 cf_instance = self.__sample(cf_instance, embedded_features, edge_probs, missing_edges)
+                 if oracle.predict(cf_instance) != oracle.predict(instance):
++                    self.stats['fallback'] += 1
++                    self._diag('fallback', n_nodes, edge_num, cf_instance,
++                               fb_iter=it + 1, n_missing=len(missing_edges))
+                     return cf_instance
+-        return None 
++        self.stats['failed'] += 1
++        self._diag('FAILED', n_nodes, edge_num, cf_instance,
++                   fb_iter=self.sampling_iterations,
++                   n_missing=instance.graph.number_of_nodes())
++        return None
++
++    def _diag(self, path, n_nodes, edge_num, cf_instance, fb_iter=0, n_missing=None):
++        """Print which strategy produced the CF and how big it is. No behaviour change."""
++        if not self.diag:
++            return
++        try:
++            cf_edges = cf_instance.graph.number_of_edges()
++        except Exception:
++            cf_edges = -1
++        extra = '' if n_missing is None else f' missing_pool={n_missing}'
++        print(f"[SAMPLER] path={path:<8s} n_nodes(padded)={n_nodes} orig_edges={edge_num} "
++              f"cf_edges={cf_edges} fb_iters={fb_iter}{extra} "
++              f"running={self.stats}")
+                 
+     def __negative_edges(self, edges, num_vertices):
+         i, j = np.triu_indices(num_vertices, k=1)
+@@ -58,7 +88,16 @@ class PositiveAndNegativeEdgeSampler(Sampler):
+         ##################################################
+         cf_instance = DataInstanceWFeaturesAndWeights(id=instance.id)
+         try:
++            if self.diag:
++                _pr = probabilities
++                print(f"[SAMPLE] probs shape={tuple(_pr.shape)} "
++                      f"sum={float(_pr.sum()):.6g} max={float(_pr.max()):.6g} "
++                      f"min={float(_pr.min()):.6g} nonzero={int((_pr > 0).sum())} "
++                      f"| edge_list shape={tuple(edge_list.shape)} num_samples={num_samples}")
+             selected_indices = torch.multinomial(probabilities, num_samples=num_samples, replacement=True).numpy()
++            if self.diag:
++                print(f"[SAMPLE]   selected shape={selected_indices.shape} "
++                      f"-> indexed edge_list shape={tuple(edge_list[selected_indices].shape)}")
+             adj[edge_list[selected_indices]] = 1
+             adj = adj + adj.T - torch.diag(torch.diag(adj))
+             
+@@ -68,7 +107,11 @@ class PositiveAndNegativeEdgeSampler(Sampler):
+             cf_instance.from_numpy_array(adj.numpy())
+             cf_instance.weights = weights.numpy()
+             cf_instance.features = features.numpy()
+-        except RuntimeError: # the probabilities are all zero
++            if self.diag:
++                print(f"[SAMPLE]   adj nonzero after assignment = {int(adj.sum())}")
++        except RuntimeError as e: # the probabilities are all zero
++            if self.diag:
++                print(f"[SAMPLE]   RuntimeError -> EMPTY graph returned: {e}")
+             cf_instance.from_numpy_array(adj.numpy())
+         
+         return cf_instance
+\ No newline at end of file

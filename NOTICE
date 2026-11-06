@@ -1,0 +1,81 @@
+GDCE-I -- Graph Diffusion Counterfactual Explanation via Inversion
+==================================================================
+
+This repository is a derivative work.
+
+1. DiGress
+----------
+The diffusion model, the graph transformer, the dataset abstractions, the
+molecular metrics and the orca helper come from DiGress:
+
+    Vignac, Krawczuk, Siraudin, Wang, Cevher, Frossard,
+    "DiGress: Discrete Denoising Diffusion for Graph Generation", ICLR 2023
+    https://github.com/cvignac/DiGress            (MIT)
+
+The MIT licence of DiGress is reproduced in LICENSE, with its original
+copyright line intact.  Files that are substantially unchanged from DiGress
+include src/models/transformer_model.py, src/diffusion/*, src/metrics/*,
+src/datasets/abstract_dataset*.py and src/analysis/*.
+
+2. FreeGress
+------------
+Classifier-free guidance for discrete graph diffusion, the guidance config
+layout and the p_uncond / s machinery follow FreeGress:
+
+    Ninniri, Podda, Bacciu,
+    "Classifier-free graph diffusion for molecular property targeting",
+    ECML PKDD 2024
+    https://github.com/Asduffo/FreeGress
+
+3. SA score
+-----------
+src/metrics/sascorer.py is the RDKit contribution of Ertl and Schuffenhauer
+(BSD-3-Clause, shipped with RDKit).
+
+4. What is new here
+-------------------
+The inversion of a guided discrete diffusion trajectory and everything built on
+it is the contribution of this paper:
+
+    src/diffusion/discrete_inversion.py        naive and posterior Gumbel inversion
+    src/inversion_mutag_mol.py                 the per-graph budget search
+    src/inversion_benzene.py
+    src/inversion_nci1_nofreq.py
+    src/review_paired_tau.py                   the paired fixed-budget comparison
+    src/shared_judge/                           the shared-classifier protocol,
+                                                the portable classifier format and
+                                                the NAFR / NA metrics
+    src/review_metrics.py, src/review_dump_metrics.py
+    analysis/                                   the table-producing scripts
+
+5. Baselines
+------------
+No upstream baseline repository is redistributed here.  baselines/<name>/
+carries the upstream URL, the pinned commit, a patch against it and our own
+adapter files; baselines/setup_baselines.sh reassembles a working checkout.  Two
+of the five upstream repositories carry no licence at all, which is why this is
+a patch and not a copy:
+
+    C2Explainer    github.com/kano5266/C2Explainer                86f3e8c  MIT
+    CF2 (gnn_cff)  github.com/chrisjtan/gnn_cff                   9020e74  no licence
+    D4Explainer    github.com/Graph-and-Geometric-Learning/...    997b4c7  MIT
+    UCExplainer    github.com/flaat/COMBINEX                      707aa65  MIT
+    XPlore         on GRETEL, github.com/MarioTheOne/GRETEL       fa60bd2  GRETEL MIT,
+                                                                           XPlore none
+
+Two exceptions to "our own adapter files", both declared in the repository:
+
+  * baselines/D4Explainer/adapter/main.py extends upstream's main.py (MIT).
+    Every such file is listed in baselines/<name>/adapter-provenance.txt.
+  * XPlore's own algorithm and GRETEL v2's two instance classes are NOT here.
+    XPlore carries no licence, so baselines/XPlore/adapter/src/wrappers/xplore/
+    ships only our framework.py plus FETCH.md, which is the exact recipe for
+    rebuilding the four missing files from their sources.
+
+6. Datasets
+-----------
+Mutagenicity, PROTEINS and TWITTER-Real-Graph-Partial are downloaded from the
+TUDataset collection (Morris et al., 2020).  Benzene comes from Agarwal et al.,
+"Evaluating explainability for graph neural networks" (2023).  None of the raw
+data is redistributed here; data/README.md says how it is fetched and what the
+preprocessing does.

@@ -1,0 +1,6 @@
+name:      C2Explainer
+upstream:  https://github.com/kano5266/C2Explainer
+commit:    86f3e8c
+licence:   MIT
+provides:  Table 2 (C2Explainer), Section S3
+local dir: baselines/C2Explainer (not published)

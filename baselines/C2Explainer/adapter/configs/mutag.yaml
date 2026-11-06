@@ -1,0 +1,31 @@
+# Default config for run_c2_mutag_evaluation.py
+
+# --- Paths (adjust per environment) ---
+gdce_path: <GDCE_ROOT>
+ckpt: ${gdce_path}/ckpt/mutag_mol/epoch=49.ckpt   # GINE checkpoint (classifier=gine)
+datadir: data/mutagenicity_mol/            # relative to gdce_path
+
+# --- Classifier selection ---
+# 'gine' = your GDCE GINE (ckpt above)                          -> run C
+# 'gcn'  = paper-style GCN trained on Mutagenicity (train_paper_gcn.py) -> run D
+classifier: gine
+gcn_ckpt: null            # required when classifier=gcn, e.g. ckpt/paper_gcn_mutagenicity/gcn.pt
+gcn_in_dim: null          # node-feature dim for the GCN (null = auto-detect from dataset)
+nhid: 20                  # paper-style GCN hidden dim
+nout: 20
+
+# --- C2Explainer hyperparameters (paper / exp1_3 defaults for MUTAG) ---
+epochs: 1000
+lr: 0.1
+subgraph_mode: false                       # false = add-mode (paper default)
+beta: 1.0                                  # perturb-loss weight (= paper's lambda); higher -> more minimal CFs
+gamma: 0.1                                 # entropy-loss weight (only active when ent_loss=true)
+ent_loss: false                            # enable entropy loss to sharpen the mask toward 0/1
+
+# --- Evaluation protocol ---
+n_runs: 5
+n_samples_per_run: 100
+
+# --- Output / runtime ---
+out_dir: c2_mutagenicity_mol_results
+cuda: "0"

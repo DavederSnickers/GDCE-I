@@ -1,0 +1,6 @@
+name:      D4Explainer
+upstream:  https://github.com/Graph-and-Geometric-Learning/D4Explainer
+commit:    997b4c7
+licence:   MIT
+provides:  Table 2 (D4Explainer), Section S3
+local dir: baselines/D4Explainer (not published)

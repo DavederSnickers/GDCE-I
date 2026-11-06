@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the paper."
+title: "GDCE-I: Graph Diffusion Counterfactual Explanation via Inversion"
+abstract: >-
+  Reference implementation of GDCE-I, a graph counterfactual explainer that
+  inverts a guided discrete denoising diffusion trajectory, together with the
+  shared-classifier evaluation protocol and the scripts that reproduce every
+  table and figure of the paper.
+type: software
+authors:
+  - family-names: Bechtoldt
+    given-names: David
+    orcid: "https://orcid.org/0009-0002-0305-0778"
+    affiliation: "Machine Learning Group, TU Berlin and BIFOLD, Berlin, Germany"
+  - family-names: Bender
+    given-names: Sidney
+    orcid: "https://orcid.org/0009-0007-1727-8577"
+    affiliation: "Machine Learning Group, TU Berlin and BIFOLD, Berlin, Germany"
+license: MIT
+repository-code: "https://github.com/DavederSnickers/GDCE-I"
+keywords:
+  - graph neural networks
+  - counterfactual explanations
+  - diffusion models
+  - explainable AI
+  - molecular graphs
+preferred-citation:
+  type: article
+  title: >-
+    Faithful, Sufficient and Understandable: Rethinking Graph Counterfactual
+    Explanations via Discrete Diffusion Inversion
+  authors:
+    - family-names: Bechtoldt
+      given-names: David
+      orcid: "https://orcid.org/0009-0002-0305-0778"
+    - family-names: Bender
+      given-names: Sidney
+      orcid: "https://orcid.org/0009-0007-1727-8577"
+  year: 2026

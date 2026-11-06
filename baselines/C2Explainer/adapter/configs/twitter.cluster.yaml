@@ -1,0 +1,15 @@
+# C2Explainer on TWITTER-Real-Graph-Partial (GDCE preprocessing) -- cluster.
+# 238 word types after the frequency filter at 500; binary adjacency, no bond
+# types. Against the SHARED CLASSIFIER. Usage:
+#   apprun python run_c2_nci1_evaluation.py --config configs/twitter.cluster.yaml \
+#       classifier=shared_judge shared_judge_path=<prefix>
+# Everything not set here is inherited from configs/nci1.yaml.
+
+gdce_path: <GDCE_ROOT>
+gdce_dataset_name: twitter
+datadir: data/twitter/
+
+classifier: shared_judge
+shared_judge_path: <GDCE_JUDGES>/judge_twitter_gcn
+
+out_dir: results/shared_judge_nonmol/twitter_gcn

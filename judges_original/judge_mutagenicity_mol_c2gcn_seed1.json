@@ -1,0 +1,41 @@
+{
+  "num_features": 13,
+  "num_classes": 2,
+  "hidden": 20,
+  "num_layers": 3,
+  "edge_dim": 0,
+  "conv": "c2gcn",
+  "dropout": 0.0,
+  "batchnorm": false,
+  "pooling": "max",
+  "self_loops": "stripped on input, none added, no normalisation",
+  "logits": "raw (apply softmax/argmax yourself; NOT log_softmax)",
+  "label_source": "raw CSV y field (0/1 as preprocessed by GDCE)",
+  "dataset": "mutagenicity_mol",
+  "seed": 1,
+  "max_nodes": 50,
+  "recipe": {
+    "hidden": 20,
+    "num_layers": 3,
+    "dropout": 0.0,
+    "lr": 0.001,
+    "weight_decay": 0.001,
+    "epochs": 5000,
+    "batch_size": 64,
+    "loss": "ce",
+    "clip": null,
+    "plateau": false
+  },
+  "selected_epoch": 4999,
+  "train_acc": 0.9167017248632731,
+  "val_acc": 0.76010101010101,
+  "test_acc": 0.7424242424242424,
+  "n_train": 2377,
+  "n_val": 792,
+  "n_test": 792,
+  "train_label_counts": [
+    1375,
+    1002
+  ],
+  "origin": "original-classifier ablation (R1.4): baseline architecture + recipe"
+}

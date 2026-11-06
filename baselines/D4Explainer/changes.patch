@@ -1,0 +1,799 @@
+diff --git a/README.md b/README.md
+index dbe12dc..11b3bfc 100644
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,4 @@
+-# D4Explainer: In-distribution Explanations of Graph Neural Network via Discrete Denoising Diffusion [NeurIPS 2023]
++pytho# D4Explainer: In-distribution Explanations of Graph Neural Network via Discrete Denoising Diffusion [NeurIPS 2023]
+ This is the Pytorch implementation of " D4Explainer: In-distribution Explanations of Graph Neural Network via Discrete Denoising Diffusion"
+ ## Requirements
+ 
+diff --git a/constants.py b/constants.py
+index 4537aaf..d0004f7 100644
+--- a/constants.py
++++ b/constants.py
+@@ -4,9 +4,16 @@ feature_dict = {
+     "Tree_Grids": 10,
+     "cornell": 1703,
+     "mutag": 14,
++    "mutag_filtered": 14,  # same atom encoding as mutag, molecules ≤50 atoms
++    "gdce_mutag": 13,       # GDCE Mutagenicity: 13 unique atom types
++    "gdce_nci1": 10,        # GDCE NCI1 freq (Huang atom-freq>50 filter): 10 atom types
++    "gdce_benzene": 8,      # GDCE Benzene (Huang filter drops P): 8 atom types
++    "gdce_proteins": 3,     # GDCE PROTEINS: helix / sheet / turn
++    "gdce_twitter": 238,    # GDCE TWITTER: words kept at freq>=500
+     "ba3": 4,
+     "bbbp": 9,
+     "NCI1": 37,
++    "nci1_filtered": 37,   # NCI1 with graphs ≤50 nodes
+ }
+ 
+ task_type = {
+@@ -15,9 +22,16 @@ task_type = {
+     "Tree_Grids": "nc",
+     "cornell": "nc",
+     "mutag": "gc",
++    "mutag_filtered": "gc",
++    "gdce_mutag": "gc",
++    "gdce_nci1": "gc",
++    "gdce_benzene": "gc",
++    "gdce_proteins": "gc",
++    "gdce_twitter": "gc",
+     "ba3": "gc",
+     "bbbp": "gc",
+     "NCI1": "gc",
++    "nci1_filtered": "gc",
+ }
+ 
+ dataset_choices = list(task_type.keys())
+diff --git a/datasets/__init__.py b/datasets/__init__.py
+index 994c022..c6b92a3 100644
+--- a/datasets/__init__.py
++++ b/datasets/__init__.py
+@@ -1,5 +1,6 @@
+ from .ba3motif_dataset import BA3Motif
+ from .mutag_dataset import Mutagenicity
++from .mutag_filtered_dataset import MutagFiltered
+ from .NCI1_dataset import NCI1
+ from .sup_dataset import bbbp
+ from .Syn_dataset import SynGraphDataset
+@@ -8,6 +9,7 @@ from .web_dataset import WebDataset
+ __all__ = [
+     "BA3Motif",
+     "Mutagenicity",
++    "MutagFiltered",
+     "NCI1",
+     "bbbp",
+     "SynGraphDataset",
+diff --git a/explainers/base.py b/explainers/base.py
+index e102266..2141565 100644
+--- a/explainers/base.py
++++ b/explainers/base.py
+@@ -18,7 +18,16 @@ EPS = 1e-6
+ class Explainer(object):
+     def __init__(self, device, gnn_model_path, task="gc"):
+         self.device = device
+-        self.model = torch.load(gnn_model_path, map_location=self.device).to(self.device)
++        # A shared judge is addressed by prefix (<prefix>.npz + <prefix>.json) and
++        # rebuilt from portable weights rather than unpickled, so the same
++        # classifier loads here and in every other repo of the comparison.
++        from gnns.shared_judge_gnn import is_shared_judge_path, load_shared_judge_gnn
++
++        if is_shared_judge_path(gnn_model_path):
++            print(f"[Explainer] using SHARED JUDGE at {gnn_model_path}")
++            self.model = load_shared_judge_gnn(gnn_model_path, self.device)
++        else:
++            self.model = torch.load(gnn_model_path, map_location=self.device).to(self.device)
+         self.model.eval()
+         self.model_name = self.model.__class__.__name__
+         self.name = self.__class__.__name__
+diff --git a/explainers/diff_explainer.py b/explainers/diff_explainer.py
+index 7c2ddc2..1ef9c51 100644
+--- a/explainers/diff_explainer.py
++++ b/explainers/diff_explainer.py
+@@ -1,3 +1,4 @@
++import inspect
+ import os
+ 
+ import numpy as np
+@@ -11,30 +12,53 @@ from explainers.diffusion.graph_utils import (
+     gen_list_of_data_single,
+     generate_mask,
+     graph2tensor,
++    lookup_edge_attr,
+     tensor2graph,
+ )
+ from explainers.diffusion.pgnn import Powerful
+ 
+ 
+-def model_save(args, model, mean_train_loss, best_sparsity, mean_test_acc):
++def _gnn_get_pred(gnn_model, x, edge_index, batch, edge_attr=None):
++    """Call gnn_model.get_pred, forwarding edge_attr only if the model accepts it."""
++    sig = inspect.signature(gnn_model.get_pred)
++    if 'edge_attr' in sig.parameters and edge_attr is not None:
++        return gnn_model.get_pred(x=x, edge_index=edge_index, batch=batch, edge_attr=edge_attr)
++    return gnn_model.get_pred(x=x, edge_index=edge_index, batch=batch)
++
++
++def _gnn_get_pred_explain(gnn_model, x, edge_index, edge_mask, batch, edge_attr=None):
++    """Call gnn_model.get_pred_explain, forwarding edge_attr only if the model accepts it."""
++    sig = inspect.signature(gnn_model.get_pred_explain)
++    if 'edge_attr' in sig.parameters and edge_attr is not None:
++        return gnn_model.get_pred_explain(
++            x=x, edge_index=edge_index, edge_mask=edge_mask, batch=batch, edge_attr=edge_attr
++        )
++    return gnn_model.get_pred_explain(
++        x=x, edge_index=edge_index, edge_mask=edge_mask, batch=batch
++    )
++
++
++def model_save(args, model, mean_train_loss, eval_sparsity, eval_acc, filename="best_model.pth"):
+     """
+     Save the model to disk
+     :param args: arguments
+     :param model: model
+     :param mean_train_loss: mean training loss
+-    :param best_sparsity: best sparsity
+-    :param mean_test_acc: mean test accuracy
++    :param eval_sparsity: eval modification rate at the time of saving
++    :param eval_acc: eval flip accuracy at the time of saving
++    :param filename: checkpoint filename within results/<dataset>/
+     """
+     to_save = {
+         "model": model.state_dict(),
+         "train_loss": mean_train_loss,
+-        "eval sparsity": best_sparsity,
+-        "eval acc": mean_test_acc,
++        "eval sparsity": eval_sparsity,
++        "eval acc": eval_acc,
+     }
+     exp_dir = f"{args.root}/{args.dataset}/"
+     os.makedirs(exp_dir, exist_ok=True)
+-    torch.save(to_save, os.path.join(exp_dir, "best_model.pth"))
+-    print(f"save model to {exp_dir}/best_model.pth")
++    path = os.path.join(exp_dir, filename)
++    torch.save(to_save, path)
++    print(f"save model to {path}")
+ 
+ 
+ def loss_func_bce(score_list, groundtruth, sigma_list, mask, device, sparsity_level):
+@@ -119,16 +143,22 @@ def gnn_pred(graph_batch, graph_batch_sub, gnn_model, ds, task):
+             mapping=graph_batch_sub.mapping,
+         )
+     else:
+-        output_prob, _ = gnn_model.get_pred(
+-                x=graph_batch.x,
+-                edge_index=graph_batch.edge_index,
+-                batch=graph_batch.batch,
+-            )
+-        output_prob_sub, _ = gnn_model.get_pred(
+-                x=graph_batch_sub.x,
+-                edge_index=graph_batch_sub.edge_index,
+-                batch=graph_batch_sub.batch,
+-            )
++        edge_attr = getattr(graph_batch, 'edge_attr', None)
++        sub_edge_attr = getattr(graph_batch_sub, 'edge_attr', None)
++        output_prob, _ = _gnn_get_pred(
++            gnn_model,
++            x=graph_batch.x,
++            edge_index=graph_batch.edge_index,
++            batch=graph_batch.batch,
++            edge_attr=edge_attr,
++        )
++        output_prob_sub, _ = _gnn_get_pred(
++            gnn_model,
++            x=graph_batch_sub.x,
++            edge_index=graph_batch_sub.edge_index,
++            batch=graph_batch_sub.batch,
++            edge_attr=sub_edge_attr,
++        )
+ 
+     y_pred = output_prob.argmax(dim=-1)
+     y_exp = output_prob_sub.argmax(dim=-1)
+@@ -163,11 +193,19 @@ def loss_cf_exp(gnn_model, graph_batch, score, y_pred, y_exp, full_edge, mask, d
+             mapping=graph_batch.mapping,
+         )
+     else:
+-        output_prob_cont, output_repr_cont = gnn_model.get_pred_explain(
++        orig_ea = getattr(graph_batch, 'edge_attr', None)
++        full_edge_attr = (
++            lookup_edge_attr(graph_batch.edge_index, orig_ea, full_edge)
++            if orig_ea is not None and orig_ea.numel() > 0
++            else None
++        )
++        output_prob_cont, output_repr_cont = _gnn_get_pred_explain(
++            gnn_model,
+             x=graph_batch.x,
+             edge_index=full_edge,
+             edge_mask=edge_mask_full,
+             batch=graph_batch.batch,
++            edge_attr=full_edge_attr,
+         )
+     n = output_repr_cont.size(-1)
+     bsz = output_repr_cont.size(0)
+@@ -208,6 +246,13 @@ class DiffExplainer(Explainer):
+         :param test_dataset: test dataset
+         """
+         best_sparsity = np.inf
++        best_flip_acc = -np.inf
++        alpha_label = getattr(args, 'alpha_label', None) or str(args.alpha_cf).replace(".", "")
++        ckpt_modrate = f"best_model_modrate_alpha_{alpha_label}.pt"
++        ckpt_flip    = f"best_model_flip_alpha_{alpha_label}.pt"
++        print(f"[train] checkpoints will be saved as:\n"
++              f"  modrate: {args.root}/{args.dataset}/{ckpt_modrate}\n"
++              f"  flip   : {args.root}/{args.dataset}/{ckpt_flip}")
+         optimizer = torch.optim.Adam(
+             model.parameters(), lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, weight_decay=args.weight_decay
+         )
+@@ -226,8 +271,12 @@ class DiffExplainer(Explainer):
+             train_loader = DataLoader(train_dataset, batch_size=args.train_batchsize, shuffle=True)
+             for i, graph in enumerate(train_loader):
+                 if graph.is_directed():
+-                    edge_index_temp = graph.edge_index
+-                    graph.edge_index = to_undirected(edge_index=edge_index_temp)
++                    ea = getattr(graph, 'edge_attr', None)
++                    if ea is not None and ea.numel() > 0:
++                        graph.edge_index, graph.edge_attr = to_undirected(
++                            edge_index=graph.edge_index, edge_attr=ea)
++                    else:
++                        graph.edge_index = to_undirected(edge_index=graph.edge_index)
+                 graph.to(args.device)
+                 train_adj_b, train_x_b = graph2tensor(graph, device=args.device)
+                 # train_adj_b: [bsz, N, N]; train_x_b: [bsz, N, C]
+@@ -314,8 +363,12 @@ class DiffExplainer(Explainer):
+                 model.eval()
+                 for graph in test_loader:
+                     if graph.is_directed():
+-                        edge_index_temp = graph.edge_index
+-                        graph.edge_index = to_undirected(edge_index=edge_index_temp)
++                        ea = getattr(graph, 'edge_attr', None)
++                        if ea is not None and ea.numel() > 0:
++                            graph.edge_index, graph.edge_attr = to_undirected(
++                                edge_index=graph.edge_index, edge_attr=ea)
++                        else:
++                            graph.edge_index = to_undirected(edge_index=graph.edge_index)
+ 
+                     graph.to(args.device)
+                     test_adj_b, test_x_b = graph2tensor(graph, device=args.device)
+@@ -394,7 +447,19 @@ class DiffExplainer(Explainer):
+                 )
+                 if mean_test_sparsity < best_sparsity:
+                     best_sparsity = mean_test_sparsity
+-                    model_save(args, model, mean_train_loss, best_sparsity, mean_test_acc)
++                    model_save(args, model, mean_train_loss, best_sparsity, mean_test_acc,
++                               filename=ckpt_modrate)
++                    # Backward-compat alias used by explain_evaluation/one_step_model_level.
++                    model_save(args, model, mean_train_loss, best_sparsity, mean_test_acc,
++                               filename="best_model.pth")
++                    print(f"  -> new best mod_rate: {best_sparsity:.4f} "
++                          f"(flip_acc at this epoch: {mean_test_acc:.4f})")
++                if mean_test_acc > best_flip_acc:
++                    best_flip_acc = mean_test_acc
++                    model_save(args, model, mean_train_loss, mean_test_sparsity, best_flip_acc,
++                               filename=ckpt_flip)
++                    print(f"  -> new best flip_acc: {best_flip_acc:.4f} "
++                          f"(mod_rate at this epoch: {mean_test_sparsity:.4f})")
+ 
+     def explain_evaluation(self, args, graph):
+         """
+@@ -448,8 +513,19 @@ class DiffExplainer(Explainer):
+                 x=graph.x, edge_index=full_edge_index, edge_mask=edge_mask_full, mapping=graph.mapping
+             )
+         else:
+-            output_prob_cont, _ = self.model.get_pred_explain(
+-                x=graph.x, edge_index=full_edge_index, edge_mask=edge_mask_full, batch=graph.batch
++            orig_ea = getattr(graph, 'edge_attr', None)
++            full_edge_attr = (
++                lookup_edge_attr(graph.edge_index, orig_ea, full_edge_index)
++                if orig_ea is not None and orig_ea.numel() > 0
++                else None
++            )
++            output_prob_cont, _ = _gnn_get_pred_explain(
++                self.model,
++                x=graph.x,
++                edge_index=full_edge_index,
++                edge_mask=edge_mask_full,
++                batch=graph.batch,
++                edge_attr=full_edge_attr,
+             )
+         y_ori = graph.y if args.task == "gc" else graph.self_y
+         y_exp = output_prob_cont.argmax(dim=-1)
+diff --git a/explainers/diffusion/graph_utils.py b/explainers/diffusion/graph_utils.py
+index cfbec0f..2aa3f8a 100644
+--- a/explainers/diffusion/graph_utils.py
++++ b/explainers/diffusion/graph_utils.py
+@@ -127,6 +127,33 @@ def graph2tensor(graph, device):
+     return adj, x_tensor
+ 
+ 
++def lookup_edge_attr(orig_edge_index, orig_edge_attr, new_edge_index):
++    """
++    For each edge in new_edge_index, look up its edge_attr from the original graph.
++    Edges not present in the original get zero features.
++
++    :param orig_edge_index: [2, E_orig]
++    :param orig_edge_attr:  [E_orig, F]
++    :param new_edge_index:  [2, E_new]
++    :return: [E_new, F]
++    """
++    feat_dim = orig_edge_attr.size(1) if orig_edge_attr.dim() > 1 else 1
++    edge_dict = {
++        (orig_edge_index[0, i].item(), orig_edge_index[1, i].item()): i
++        for i in range(orig_edge_index.size(1))
++    }
++    rows = []
++    for i in range(new_edge_index.size(1)):
++        key = (new_edge_index[0, i].item(), new_edge_index[1, i].item())
++        if key in edge_dict:
++            rows.append(orig_edge_attr[edge_dict[key]])
++        else:
++            rows.append(torch.zeros(feat_dim, device=orig_edge_attr.device))
++    if rows:
++        return torch.stack(rows)
++    return torch.zeros(0, feat_dim, device=orig_edge_attr.device)
++
++
+ def tensor2graph(graph_batch, score, mask_adj, threshold=0.5):
+     """
+     Convert tensor batch to graph batch
+@@ -138,9 +165,24 @@ def tensor2graph(graph_batch, score, mask_adj, threshold=0.5):
+     """
+     score_tensor = torch.stack(score, dim=0).squeeze(-1)  # len_sigma_list, bsz, N, N]
+     score_tensor = torch.mean(score_tensor, dim=0)  # [bsz, N, N]
++    # Powerful (PPGN) produces a non-symmetric score matrix, so score[i,j] and
++    # score[j,i] can land on opposite sides of the threshold. That yields a
++    # directed edge_index (one direction kept, the reverse dropped) which is
++    # invisible to the undirected metrics (GED isomorphism, edge_sparsity uses
++    # triu k=1) yet changes GCNConv degree-normalization -> spurious GED=0/ES=0
++    # flips. Symmetrize the score so the reconstructed graph is undirected,
++    # matching the original molecule and how the model was trained (symmetric
++    # noise + symmetric targets).
++    score_tensor = 0.5 * (score_tensor + score_tensor.transpose(-1, -2))
+     bsz = score_tensor.size(0)
+     pred_adj = torch.where(torch.sigmoid(score_tensor) > threshold, 1, 0).to(score_tensor.device)
+     pred_adj = pred_adj * mask_adj
++    # generate_mask leaves the diagonal set, so D4 can predict self-loops (i,i).
++    # Molecular graphs have none; self-loops are invisible to topology metrics
++    # (GED uses i<j, edge_sparsity uses triu k=1) yet still flip the GNN and break
++    # SMILES reconstruction (graph_to_mol -> AddBond(u,u)). Drop them.
++    diag_mask = 1 - torch.eye(pred_adj.size(-1), device=pred_adj.device)
++    pred_adj = pred_adj * diag_mask.unsqueeze(0)
+     node_sizes = degree(graph_batch.batch, dtype=torch.long).detach().cpu().numpy()  # list of node numbers
+     sum_list = torch.tensor([node_sizes[:i].sum() for i in range(bsz)]).to(score_tensor.device)
+     edge_indices = pred_adj.nonzero().t()
+@@ -151,6 +193,13 @@ def tensor2graph(graph_batch, score, mask_adj, threshold=0.5):
+     graph_batch_sub = graph_batch.clone()
+     graph_batch_sub.edge_index = edge_index
+ 
++    # Carry edge_attr from the original graph; new/unknown edges get zero features.
++    orig_ea = getattr(graph_batch, 'edge_attr', None)
++    if orig_ea is not None and orig_ea.numel() > 0:
++        graph_batch_sub.edge_attr = lookup_edge_attr(
++            graph_batch.edge_index, orig_ea, edge_index
++        )
++
+     return graph_batch_sub
+ 
+ 
+diff --git a/gnns/mutag_gnn.py b/gnns/mutag_gnn.py
+index cfd415b..da4cda0 100644
+--- a/gnns/mutag_gnn.py
++++ b/gnns/mutag_gnn.py
+@@ -13,6 +13,8 @@ from torch_geometric.data import DataLoader
+ from torch_geometric.nn import BatchNorm, GCNConv, GINEConv, global_mean_pool
+ 
+ from datasets.mutag_dataset import Mutagenicity
++from datasets.mutag_filtered_dataset import MutagFiltered
++from datasets.gdce_mutag_dataset import GDCEMutagDataset
+ from utils import Gtest, Gtrain, set_seed
+ 
+ EPS = 1
+@@ -39,6 +41,12 @@ def parse_args():
+     parser.add_argument("--batch_size", type=int, default=128, help="Batch size.")
+     parser.add_argument("--verbose", type=int, default=10, help="Interval of evaluation.")
+     parser.add_argument("--num_unit", type=int, default=2, help="number of Convolution layers(units)")
++    parser.add_argument(
++        "--dataset", type=str, default="mutag",
++        choices=["mutag", "mutag_filtered", "gdce_mutag"],
++        help="'mutag' = full dataset; 'mutag_filtered' = molecules ≤50 atoms (14-dim); "
++             "'gdce_mutag' = GDCE's 13-dim encoding (for GDCE comparison)",
++    )
+     parser.add_argument(
+         "--random_label", type=bool, default=False, help="train a model under label randomization for sanity check"
+     )
+@@ -46,13 +54,13 @@ def parse_args():
+     return parser.parse_args()
+ 
+ class Mutag_GCN(torch.nn.Module):
+-    def __init__(self, conv_unit=3):
++    def __init__(self, conv_unit=3, feature_in=14):
+         super(Mutag_GCN, self).__init__()
+         self.convs = ModuleList()
+         self.batch_norms = ModuleList()
+         self.relus = ModuleList()
+         self.edge_emb = Lin(3, 1)
+-        self.convs.append(GCNConv(in_channels=14, out_channels=128))
++        self.convs.append(GCNConv(in_channels=feature_in, out_channels=128))
+         for i in range(conv_unit - 2):
+             self.convs.append(GCNConv(in_channels=128, out_channels=128))
+         self.convs.append(GCNConv(in_channels=128, out_channels=128))
+@@ -118,9 +126,15 @@ if __name__ == "__main__":
+     args = parse_args()
+     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else "cpu")
+ 
+-    test_dataset = Mutagenicity(args.data_path, mode="testing")
+-    val_dataset = Mutagenicity(args.data_path, mode="evaluation")
+-    train_dataset = Mutagenicity(args.data_path, mode="training")
++    if args.dataset == "gdce_mutag":
++        DatasetCls, feature_in = GDCEMutagDataset, 13
++    elif args.dataset == "mutag_filtered":
++        DatasetCls, feature_in = MutagFiltered, 14
++    else:
++        DatasetCls, feature_in = Mutagenicity, 14
++    test_dataset = DatasetCls(args.data_path, mode="testing")
++    val_dataset = DatasetCls(args.data_path, mode="evaluation")
++    train_dataset = DatasetCls(args.data_path, mode="training")
+     if args.random_label:
+         for dataset in [test_dataset, val_dataset, train_dataset]:
+             for g in dataset:
+@@ -129,7 +143,7 @@ if __name__ == "__main__":
+     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+-    model = Mutag_GCN(args.num_unit).to(device)
++    model = Mutag_GCN(args.num_unit, feature_in=feature_in).to(device)
+ 
+     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.8, patience=10, min_lr=1e-5)
+@@ -164,7 +178,7 @@ if __name__ == "__main__":
+             "Validation acc: {:5f}".format(epoch, t2 - t1, lr, loss, train_acc, val_error, val_acc)
+         )
+ 
+-    save_path = "mutag_gcn.pt"
++    save_path = f"{args.dataset}_gcn.pt"
+     if not osp.exists(args.model_path):
+         os.makedirs(args.model_path)
+     torch.save(model.cpu(), osp.join(args.model_path, save_path))
+diff --git a/gnns/nci1_gnn.py b/gnns/nci1_gnn.py
+index 8fb7af5..9e5db09 100644
+--- a/gnns/nci1_gnn.py
++++ b/gnns/nci1_gnn.py
+@@ -13,6 +13,9 @@ from torch_geometric.data import DataLoader
+ from torch_geometric.nn import BatchNorm, LEConv, global_mean_pool
+ 
+ from datasets import NCI1
++from datasets.nci1_filtered_dataset import NCI1Filtered
++from datasets.gdce_nci1_dataset import GDCENci1Dataset
++from datasets.gdce_benzene_dataset import GDCEBenzeneDataset
+ from utils import Gtest, Gtrain, set_seed
+ 
+ EPS = 1
+@@ -39,24 +42,34 @@ def parse_args():
+     parser.add_argument(
+         "--random_label", type=bool, default=False, help="train a model under label randomization for sanity check"
+     )
++    parser.add_argument(
++        "--dataset", type=str, default="nci1_filtered",
++        choices=["nci1", "nci1_filtered", "gdce_nci1", "gdce_benzene"],
++        help="'nci1'/'nci1_filtered' = raw TU (37-dim); "
++             "'gdce_nci1' = GDCE freq CSVs (10-dim), "
++             "'gdce_benzene' = GDCE Benzene CSVs (8-dim)",
++    )
+     return parser.parse_args()
+ 
+ 
+ class NCI1GCN(torch.nn.Module):
+-    def __init__(self, conv_unit=3):
++    def __init__(self, conv_unit=3, in_dim=37):
+         super(NCI1GCN, self).__init__()
+         self.convs = ModuleList()
+         self.batch_norms = ModuleList()
+         self.relus = ModuleList()
+-        # self.convs.append(GCNConv(in_channels=37, out_channels=128))
+-        self.convs.append(LEConv(in_channels=37, out_channels=128))
++        # in_dim = 37 (raw/nofreq NCI1 atom vocab) or 10 (GDCE freq filter)
++        self.convs.append(LEConv(in_channels=in_dim, out_channels=128))
+         for i in range(conv_unit - 2):
+             #     self.convs.append(GCNConv(in_channels=128, out_channels=128))
+             # self.convs.append(GCNConv(in_channels=128, out_channels=128))
+             self.convs.append(LEConv(in_channels=128, out_channels=128))
+         self.convs.append(LEConv(in_channels=128, out_channels=128))
+-        self.batch_norms.extend([BatchNorm(128)] * conv_unit)
+-        self.relus.extend([ReLU()] * conv_unit)
++        # NOTE: [BatchNorm(128)] * conv_unit would create conv_unit REFERENCES to a
++        # single BatchNorm (shared running stats -> eval-mode collapse). This bug is
++        # why the original code left BatchNorm commented out. Build distinct modules.
++        self.batch_norms.extend([BatchNorm(128) for _ in range(conv_unit)])
++        self.relus.extend([ReLU() for _ in range(conv_unit)])
+ 
+         # self.lin1 = Lin(128, 128)
+         self.ffn = nn.Sequential(*([nn.Linear(128, 128)] + [ReLU(), nn.Dropout(), nn.Linear(128, 2)]))
+@@ -67,8 +80,7 @@ class NCI1GCN(torch.nn.Module):
+         edge_weight = torch.ones((edge_index.size(1),), device=edge_index.device)
+         for conv, batch_norm, relu in zip(self.convs, self.batch_norms, self.relus):
+             x = conv(x, edge_index, edge_weight)
+-            # x = relu(batch_norm(x))
+-            x = relu(x)
++            x = relu(batch_norm(x))
+         graph_x = global_mean_pool(x, batch)
+         pred = self.ffn(graph_x)
+         self.readout = self.softmax(pred)
+@@ -78,8 +90,7 @@ class NCI1GCN(torch.nn.Module):
+         edge_weight = torch.ones((edge_index.size(1),), device=edge_index.device)
+         for conv, batch_norm, relu in zip(self.convs, self.batch_norms, self.relus):
+             x = conv(x, edge_index, edge_weight)
+-            # x = relu(batch_norm(x))
+-            x = relu(x)
++            x = relu(batch_norm(x))
+         node_x = x
+         return node_x
+ 
+@@ -98,7 +109,7 @@ class NCI1GCN(torch.nn.Module):
+         edge_mask = (edge_mask * EPS).sigmoid()
+         for conv, batch_norm, relu in zip(self.convs, self.batch_norms, self.relus):
+             x = conv(x, edge_index, edge_weight=edge_mask)
+-            x = relu(x)
++            x = relu(batch_norm(x))
+         node_x = x
+         graph_x = global_mean_pool(node_x, batch)
+         pred = self.ffn(graph_x)
+@@ -116,9 +127,17 @@ if __name__ == "__main__":
+     args = parse_args()
+     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else "cpu")
+ 
+-    test_dataset = NCI1(args.data_path, mode="testing")
+-    val_dataset = NCI1(args.data_path, mode="evaluation")
+-    train_dataset = NCI1(args.data_path, mode="training")
++    if args.dataset == "gdce_benzene":
++        DatasetCls, in_dim = GDCEBenzeneDataset, 8
++    elif args.dataset == "gdce_nci1":
++        DatasetCls, in_dim = GDCENci1Dataset, 10
++    elif args.dataset == "nci1_filtered":
++        DatasetCls, in_dim = NCI1Filtered, 37
++    else:
++        DatasetCls, in_dim = NCI1, 37
++    test_dataset = DatasetCls(args.data_path, mode="testing")
++    val_dataset = DatasetCls(args.data_path, mode="evaluation")
++    train_dataset = DatasetCls(args.data_path, mode="training")
+     if args.random_label:
+         for dataset in [test_dataset, val_dataset, train_dataset]:
+             for g in dataset:
+@@ -127,7 +146,7 @@ if __name__ == "__main__":
+     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+-    model = NCI1GCN(args.num_unit).to(device)
++    model = NCI1GCN(args.num_unit, in_dim=in_dim).to(device)
+ 
+     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.8, patience=10, min_lr=1e-5)
+@@ -162,7 +181,8 @@ if __name__ == "__main__":
+             "Validation acc: {:5f}".format(epoch, t2 - t1, lr, loss, train_acc, val_error, val_acc)
+         )
+ 
+-    save_path = "NCI1_gcn.pt"
++    save_path = f"{args.dataset}_gcn.pt"
+     if not osp.exists(args.model_path):
+         os.makedirs(args.model_path)
+     torch.save(model.cpu(), osp.join(args.model_path, save_path))
++    print(f"Saved oracle to {osp.join(args.model_path, save_path)}")
+diff --git a/gnns/synthetic_gnn.py b/gnns/synthetic_gnn.py
+index 6481bd2..1621cdb 100644
+--- a/gnns/synthetic_gnn.py
++++ b/gnns/synthetic_gnn.py
+@@ -11,7 +11,13 @@ import torch.nn.functional as F
+ from torch.nn import Linear as Lin, ModuleList, ReLU, Softmax
+ from torch.optim.lr_scheduler import ReduceLROnPlateau
+ from torch_geometric.nn import BatchNorm, GCNConv
+-from torch_geometric.utils import accuracy
++try:
++    from torch_geometric.utils import accuracy
++except ImportError:  # `accuracy` was removed in torch_geometric >= 2.4
++    def accuracy(pred, target):
++        """Local replacement for the removed torch_geometric.utils.accuracy."""
++        return int((pred == target).sum()) / max(target.numel(), 1)
++
+ 
+ from utils import set_seed
+ 
+diff --git a/gnns/tree_grids_gnn.py b/gnns/tree_grids_gnn.py
+index 4b3d3a0..ded7e76 100644
+--- a/gnns/tree_grids_gnn.py
++++ b/gnns/tree_grids_gnn.py
+@@ -10,7 +10,13 @@ import torch.nn as nn
+ from torch.nn import Linear as Lin, ModuleList, ReLU, Softmax
+ from torch.optim.lr_scheduler import ReduceLROnPlateau
+ from torch_geometric.nn import BatchNorm, GCNConv
+-from torch_geometric.utils import accuracy
++try:
++    from torch_geometric.utils import accuracy
++except ImportError:  # `accuracy` was removed in torch_geometric >= 2.4
++    def accuracy(pred, target):
++        """Local replacement for the removed torch_geometric.utils.accuracy."""
++        return int((pred == target).sum()) / max(target.numel(), 1)
++
+ 
+ from utils import set_seed
+ 
+diff --git a/gnns/web_gnn.py b/gnns/web_gnn.py
+index 02eb2b7..54cb413 100644
+--- a/gnns/web_gnn.py
++++ b/gnns/web_gnn.py
+@@ -13,7 +13,15 @@ from torch.nn import Parameter
+ from torch.optim.lr_scheduler import ReduceLROnPlateau
+ from torch_geometric.nn import BatchNorm, MessagePassing
+ from torch_geometric.nn.inits import zeros
+-from torch_geometric.utils import accuracy, add_remaining_self_loops
++try:
++    from torch_geometric.utils import accuracy, add_remaining_self_loops
++except ImportError:  # `accuracy` was removed in torch_geometric >= 2.4
++    from torch_geometric.utils import add_remaining_self_loops
++
++    def accuracy(pred, target):
++        """Local replacement for the removed torch_geometric.utils.accuracy."""
++        return int((pred == target).sum()) / max(target.numel(), 1)
++
+ from torch_scatter import scatter_add
+ 
+ from utils import set_seed
+diff --git a/main.py b/main.py
+deleted file mode 100644
+index 73fa112..0000000
+--- a/main.py
++++ /dev/null
+@@ -1,67 +0,0 @@
+-import argparse
+-
+-import torch
+-from torch_geometric.loader import DataLoader
+-from constants import feature_dict, task_type, dataset_choices
+-from explainers import *
+-from gnns import *
+-from utils.dataset import get_datasets
+-
+-
+-def parse_args():
+-    parser = argparse.ArgumentParser(description="Train explainers")
+-    parser.add_argument("--cuda", type=int, default=0, help="GPU device.")
+-    parser.add_argument("--root", type=str, default="results/", help="Result directory.")
+-    parser.add_argument("--dataset", type=str, default="Tree_Cycle", choices=dataset_choices)
+-    parser.add_argument("--verbose", type=int, default=10)
+-    parser.add_argument("--gnn_type", type=str, default="gcn")
+-    parser.add_argument("--task", type=str, default="nc")
+-
+-    parser.add_argument("--train_batchsize", type=int, default=32)
+-    parser.add_argument("--test_batchsize", type=int, default=32)
+-    parser.add_argument("--sigma_length", type=int, default=10)
+-    parser.add_argument("--epoch", type=int, default=800)
+-    parser.add_argument("--feature_in", type=int)
+-    parser.add_argument("--data_size", type=int, default=-1)
+-
+-    parser.add_argument("--threshold", type=float, default=0.5)
+-    parser.add_argument("--alpha_cf", type=float, default=0.5)
+-    parser.add_argument("--dropout", type=float, default=0.001)
+-    parser.add_argument("--learning_rate", type=float, default=1e-3)
+-    parser.add_argument("--lr_decay", type=float, default=0.999)
+-    parser.add_argument("--weight_decay", type=float, default=0)
+-    parser.add_argument("--prob_low", type=float, default=0.0)
+-    parser.add_argument("--prob_high", type=float, default=0.4)
+-    parser.add_argument("--sparsity_level", type=float, default=2.5)
+-
+-    parser.add_argument("--normalization", type=str, default="instance")
+-    parser.add_argument("--num_layers", type=int, default=6)
+-    parser.add_argument("--layers_per_conv", type=int, default=1)
+-    parser.add_argument("--n_hidden", type=int, default=64)
+-    parser.add_argument("--cat_output", type=bool, default=True)
+-    parser.add_argument("--residual", type=bool, default=False)
+-    parser.add_argument("--noise_mlp", type=bool, default=True)
+-    parser.add_argument("--simplified", type=bool, default=False)
+-
+-    return parser.parse_args()
+-
+-
+-args = parse_args()
+-args.noise_list = None
+-
+-args.device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else "cpu")
+-args.feature_in = feature_dict[args.dataset]
+-args.task = task_type[args.dataset]
+-train_dataset, val_dataset, test_dataset = get_datasets(name=args.dataset)
+-
+-train_dataset = train_dataset[: args.data_size]
+-gnn_path = f"param/gnns/{args.dataset}_{args.gnn_type}.pt"
+-explainer = DiffExplainer(args.device, gnn_path)
+-
+-# Train D4Explainer over train_dataset and evaluate
+-explainer.explain_graph_task(args, train_dataset, val_dataset)
+-
+-# Test D4Explainer on test_dataset
+-test_loader = DataLoader(dataset=test_dataset, batch_size=1, shuffle=False)
+-for graph in test_loader:
+-    explanation, y_ori, y_exp, modif_r = explainer.explain_evaluation(args, graph)
+\ No newline at end of file
+diff --git a/requirements.txt b/requirements.txt
+index da13ec5..63a0c7d 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -26,15 +26,9 @@ requests==2.28.2
+ scikit-learn==1.2.1
+ scipy==1.10.1
+ six==1.16.0
++rdkit==2023.9.6
+ statsmodels==0.13.5
+ threadpoolctl==3.1.0
+-torch==1.10.1+cu102
+-torch-cluster==1.6.0
+-torch-geometric==2.0.4
+-torch-scatter==2.0.9
+-torch-sparse==0.6.13
+-torchaudio==0.10.1+cu102
+-torchvision==0.11.2+cu102
+ tqdm==4.64.1
+ typing_extensions==4.5.0
+ urllib3==1.26.14
+diff --git a/utils/dataset.py b/utils/dataset.py
+index ffff26f..4116dc6 100644
+--- a/utils/dataset.py
++++ b/utils/dataset.py
+@@ -1,6 +1,11 @@
+ import os
+ 
+-from datasets import NCI1, BA3Motif, Mutagenicity, SynGraphDataset, WebDataset, bbbp
++from datasets import NCI1, BA3Motif, Mutagenicity, MutagFiltered, SynGraphDataset, WebDataset, bbbp
++from datasets.gdce_mutag_dataset import GDCEMutagDataset
++from datasets.gdce_nci1_dataset import GDCENci1Dataset
++from datasets.gdce_benzene_dataset import GDCEBenzeneDataset
++from datasets.gdce_nonmol_dataset import GDCENonMolDataset
++from datasets.nci1_filtered_dataset import NCI1Filtered
+ 
+ 
+ def get_datasets(name, root="data/"):
+@@ -10,16 +15,47 @@ def get_datasets(name, root="data/"):
+     :param root: root path of the dataset
+     :return: train_dataset, test_dataset, val_dataset
+     """
+-    if name == "mutag":
++    if name == "gdce_mutag":
++        folder = os.path.join(root, "GDCE_MUTAG")
++        train_dataset = GDCEMutagDataset(folder, mode="training")
++        val_dataset   = GDCEMutagDataset(folder, mode="evaluation")
++        test_dataset  = GDCEMutagDataset(folder, mode="testing")
++    elif name == "gdce_benzene":
++        folder = os.path.join(root, "GDCE_BENZENE")
++        train_dataset = GDCEBenzeneDataset(folder, mode="training")
++        val_dataset   = GDCEBenzeneDataset(folder, mode="evaluation")
++        test_dataset  = GDCEBenzeneDataset(folder, mode="testing")
++    elif name == "gdce_nci1":
++        folder = os.path.join(root, "GDCE_NCI1")
++        train_dataset = GDCENci1Dataset(folder, mode="training")
++        val_dataset   = GDCENci1Dataset(folder, mode="evaluation")
++        test_dataset  = GDCENci1Dataset(folder, mode="testing")
++    elif name in ("gdce_proteins", "gdce_twitter"):
++        short = name[len("gdce_"):]
++        folder = os.path.join(root, f"GDCE_{short.upper()}")
++        train_dataset = GDCENonMolDataset(folder, name=short, mode="training")
++        val_dataset   = GDCENonMolDataset(folder, name=short, mode="evaluation")
++        test_dataset  = GDCENonMolDataset(folder, name=short, mode="testing")
++    elif name == "mutag":
+         folder = os.path.join(root, "MUTAG")
+         train_dataset = Mutagenicity(folder, mode="training")
+         test_dataset = Mutagenicity(folder, mode="testing")
+         val_dataset = Mutagenicity(folder, mode="evaluation")
++    elif name == "mutag_filtered":
++        folder = os.path.join(root, "MUTAG")
++        train_dataset = MutagFiltered(folder, mode="training")
++        val_dataset = MutagFiltered(folder, mode="evaluation")
++        test_dataset = MutagFiltered(folder, mode="testing")
+     elif name == "NCI1":
+         folder = os.path.join(root, "NCI1")
+         train_dataset = NCI1(folder, mode="training")
+         test_dataset = NCI1(folder, mode="testing")
+         val_dataset = NCI1(folder, mode="evaluation")
++    elif name == "nci1_filtered":
++        folder = os.path.join(root, "NCI1")
++        train_dataset = NCI1Filtered(folder, mode="training")
++        val_dataset = NCI1Filtered(folder, mode="evaluation")
++        test_dataset = NCI1Filtered(folder, mode="testing")
+     elif name == "ba3":
+         folder = os.path.join(root, "BA3")
+         train_dataset = BA3Motif(folder, mode="training")

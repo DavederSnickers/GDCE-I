@@ -1,0 +1,28 @@
+Bootstrap: docker
+From:  continuumio/miniconda3
+
+%files
+    $PWD/req.yaml req.yaml
+
+
+%post
+    chmod 1777 /tmp
+    apt-get update && apt-get -y install libgl1
+    conda update -n base -c defaults conda -y
+    conda env create -f req.yaml -n digress
+
+    # Source environment at runtime
+    echo ". /opt/conda/etc/profile.d/conda.sh" >> $SINGULARITY_ENVIRONMENT
+    echo "conda activate digress" >> $SINGULARITY_ENVIRONMENT
+
+    # Activate the environment and install torch_sparse using the unified PyG command
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate digress
+    pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113
+    pip install torch-scatter -f https://data.pyg.org/whl/torch-$1.11.0+cu113.html
+    pip install torch-sparse==0.6.15 -f https://data.pyg.org/whl/torch-$1.11.0+cu113.html
+    pip install torch-geometric==2.3.1
+    
+
+%environment
+

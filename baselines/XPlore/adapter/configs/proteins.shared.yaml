@@ -1,0 +1,35 @@
+# RSGG-CE under the shared-judge protocol of the GDCE-I paper.
+#
+#   apprun python run_rsgg_evaluation.py --config configs/proteins.shared.yaml
+#
+# Every method in the comparison targets the same classifier, so `oracle` is the
+# shared judge rather than RSGG-CE's own TF GCN. The run writes cf_dump.jsonl in
+# the schema the control judge reads, so NAFR and NA can be computed afterwards
+# without re-generating the counterfactuals.
+
+gdce_path: <GDCE_ROOT>
+datadir: data/proteins/
+dataset_name: proteins
+molecular: False
+
+oracle: shared_judge
+shared_judge_path: <GDCE_JUDGES>/judge_proteins_gcn
+
+# RSGG-CE (GraphCounteRGAN) hyperparameters -- paper scale (Table 6).
+n_nodes: 50
+feature_dim: 8
+epochs: 5
+training_iterations: 100
+sampling_iterations: 10
+lr_generator: 0.001
+lr_discriminator: 0.001
+fold_id: 0
+
+# Evaluation protocol, identical to GDCE-I and the other baselines.
+n_runs: 5
+n_samples_per_run: 100
+
+out_dir: rsgg_proteins_shared_results
+explainer_store_path: ./rsgg_explainers_proteins_shared
+ckpt: null
+cuda: "0"

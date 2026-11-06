@@ -1,0 +1,92 @@
+# Files from src/ that go into the public release, one path per line.
+#
+# The list is the import closure of the entry points the paper uses, computed
+# statically (release/tools/import_closure.py), plus the package markers and the
+# two sys.path-loaded modules the static pass cannot see (shared_judge.py,
+# cf_dump.py).  Everything else under src/ belongs to QM9/ZINC/AIDS/SPMotif/
+# IMDB/BA2Motifs or to the conference version and is NOT published -- see
+# release/MANIFEST.excluded for the reasons.
+
+# --- entry points -----------------------------------------------------------
+src/main.py                                 # train a conditional diffusion model
+src/inversion_mutag_mol.py                  # counterfactual search, molecular datasets (5 edge classes)
+src/inversion_benzene.py                    # thin wrapper over the molecular runner for Benzene
+src/inversion_nci1_nofreq.py                # counterfactual search, binary-adjacency datasets (PROTEINS, TWITTER)
+src/review_paired_tau.py                    # paired fixed-budget replay of the three noise treatments
+src/judge_agreement.py                      # agreement of base and control classifier on untouched test graphs
+
+# --- method -----------------------------------------------------------------
+src/diffusion_planar_discrete.py            # DiscreteDenoisingDiffusion: training + guided sampling
+src/diffusion_model.py                      # LiftedDenoisingDiffusion (continuous variant, kept for the import)
+src/diffusion/__init__.py
+src/diffusion/discrete_inversion.py         # the inversion itself (naive and posterior Gumbel)
+src/diffusion/diffusion_utils.py
+src/diffusion/distributions.py
+src/diffusion/extra_features.py
+src/diffusion/extra_features_molecular.py
+src/diffusion/noise_schedule.py
+src/models/__init__.py
+src/models/transformer_model.py             # the graph transformer of DiGress
+src/models/layers.py
+src/models/GCN.py
+src/models/Mutag_GCN.py
+src/models/Mutag_GIN.py
+src/models/Mutag_GINE.py
+src/models/NCI1_GCN.py
+src/models/shared_judge_adapter.py          # lets the diffusion code call a SharedJudge .npz
+src/guidance/node_model.py
+src/utils.py
+src/timeout_exception.py
+src/__init__.py
+
+# --- data -------------------------------------------------------------------
+src/datasets/__init__.py
+src/datasets/spectre_dataset.py             # all four paper datasets: download, filter, split, relabel
+src/datasets/abstract_dataset.py
+src/datasets/abstract_dataset_1.py
+src/datasets/guided_data.py
+src/datasets/moses_dataset.py               # imported by main.py's dispatch; unused by the paper
+src/datasets/qm9_dataset.py                 # imported by main.py's dispatch; unused by the paper
+src/datasets/zinc250k_dataset.py            # imported by main.py's dispatch; unused by the paper
+
+# --- metrics ----------------------------------------------------------------
+src/metrics/__init__.py
+src/metrics/abstract_metrics.py
+src/metrics/train_metrics.py                # the training loss, incl. the edge weight lambda_E
+src/metrics/molecular_metrics.py
+src/metrics/molecular_metrics_discrete.py
+src/metrics/properties.py
+src/metrics/sascorer.py
+src/metrics/drd2_scorer.py                  # needs clf_py36.pkl, which is NOT shipped (unused here)
+src/review_metrics.py                       # graph-level edit/sparsity metrics, numpy + RDKit only
+src/review_dump_metrics.py                  # recomputes the table metrics from a cf_dump.jsonl
+src/review_guidance_check.py                # checks the implemented guidance against Eq. (12)
+src/review_min_edit.py                      # brute-force minimum-edit oracle (reference, not used in the tables)
+
+# --- shared classifier protocol ---------------------------------------------
+src/shared_judge/shared_judge.py            # the portable classifier (npz + json, no PyG)
+src/shared_judge/train_judge.py             # trains one shared classifier
+src/shared_judge/train_seed1_judges.py      # trains the control copies (seed 1)
+src/shared_judge/train_original_judges.py   # the baselines' own classifiers (Section S3)
+src/shared_judge/verify_original_judges.py
+src/shared_judge/adversarial_flip.py        # NAFR / NA from a cf_dump.jsonl
+src/shared_judge/cf_dump.py                 # the exact counterfactual dump format
+src/shared_judge/twitter_word_flips.py      # maps TWITTER node types back to words
+src/shared_judge/plot_results.py
+src/shared_judge/plot_nonmol.py
+
+# --- analysis / dataset screening -------------------------------------------
+src/analysis/__init__.py
+src/analysis/rdkit_functions.py
+src/analysis/visualization.py
+src/analysis/spectre_utils.py
+src/analysis/dist_helper.py
+src/analysis/orca/orca.cpp
+src/analysis/orca/orca.h
+src/analyze_transfer.py
+src/analyze_freq_filter.py                  # the atom-frequency filter of Huang et al.
+src/bow_ceiling.py                          # bag-of-words ceiling (TWITTER shortcut screening)
+src/check_benzene_smiles_ceiling.py
+src/check_tu_features.py
+src/screen_benzene.py
+src/screen_tudataset.py                     # size/density shortcut screening for a candidate dataset

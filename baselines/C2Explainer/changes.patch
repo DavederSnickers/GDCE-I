@@ -1,0 +1,30 @@
+diff --git a/src/cf_explainer/c2_explainer.py b/src/cf_explainer/c2_explainer.py
+index 25cd37a..698d5a0 100644
+--- a/src/cf_explainer/c2_explainer.py
++++ b/src/cf_explainer/c2_explainer.py
+@@ -132,14 +132,17 @@ class C2Explainer(ExplainerAlgorithm):
+             total_edges = edge_index.size(1)
+             edge_index_remain = torch.ones(size=[2,0]).to(x.device).to(int) #empty tensor
+             edge_index_delete = edge_index
+-            
+-            #======
+-            a = torch.arange(x.size(0))
+-            b = torch.arange(x.size(0), x.size(0)+3) # add three isolated nodes
+-            x = torch.cat([x, x[:3]]) # duplicate first three nodes
+-            edge_index_add = torch.cartesian_prod(a, b).T.to(x.device).to(int) # message flow?
+-            #======
+-            
++
++            # Candidate edges to add: every pair of EXISTING nodes (complete
++            # graph), minus the edges already present. No new nodes are
++            # introduced -- a counterfactual only adds/deletes edges among the
++            # original nodes, consistent with the C2Explainer paper and the
++            # node-classification branch above.
++            all_nodes = torch.arange(x.size(0), device=x.device)
++            edge_index_add = torch.combinations(all_nodes).T.to(x.device).to(int)
++            edge_index_add = to_undirected(edge_index_add).to(x.device)
++            edge_index_add = self._remove_edges(edge_index_add, edge_index)
++
+             if self.subgraph_mode:
+                 edge_index_add = torch.ones(size=[2,0]).to(x.device).to(int)
+             

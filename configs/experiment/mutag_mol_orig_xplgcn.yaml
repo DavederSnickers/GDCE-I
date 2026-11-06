@@ -1,0 +1,45 @@
+# @package _global_
+# Original-classifier ablation (R1.4). Identical to mutag_mol_gcn.yaml except that the guidance
+# labels come from XPlore's GCN (GRETEL DownstreamGCN, MUTAG_GCN_XPlore.jsonc recipe, seed 0)
+# instead of the shared GCN judge.
+general:
+    name: 'mutag-mol-orig-xplgcn'
+    gpus: 1
+    test_only: null
+    wandb: 'disabled'
+    check_val_every_n_epochs: 10
+    sample_every_val: 9999
+    samples_to_generate: 20
+    samples_to_save: 20
+    log_every_steps: 100
+    final_model_samples_to_generate: 30
+    final_model_samples_to_save: 30
+train:
+    n_epochs: 600
+    batch_size: 128
+    lr: 0.0002
+    ckpt_every_n_train_steps: 10
+    weight_decay: 1e-4
+    optimizer: adamw
+model:
+    type: 'discrete'
+    transition: 'marginal'
+    diffusion_steps: 500
+    diffusion_noise_schedule: 'cosine'
+    n_layers: 8
+    lambda_train: [5, 0]
+    extra_features: null
+    hidden_mlp_dims: { 'X': 256, 'E': 128, 'y': 256 }
+    hidden_dims: { 'dx': 256, 'de': 64, 'dy': 128, 'n_head': 8, 'dim_ffX': 256, 'dim_ffE': 128, 'dim_ffy': 256 }
+guidance:
+    guidance_target: ['tox']
+    p_uncond: 0.1
+    trainable_cf: True
+    guidance_medium: 'both'
+    s: 3
+    graph_classifier_path: null
+    # Original classifier of the baseline: XPlore's GCN (GRETEL DownstreamGCN, MUTAG_GCN_XPlore.jsonc recipe, seed 0).
+    shared_judge_path: '${oc.env:GDCE_JUDGES_ORIG}/judge_mutagenicity_mol_xplgcn'
+    label_source: 'classifier'
+    n_samples_per_test_molecule: 10
+    n_test_molecules_to_sample: 20

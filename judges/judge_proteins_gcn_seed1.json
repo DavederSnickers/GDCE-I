@@ -1,0 +1,20 @@
+{
+  "num_features": 3,
+  "num_classes": 2,
+  "hidden": 64,
+  "num_layers": 2,
+  "edge_dim": 0,
+  "conv": "gcn",
+  "dropout": 0.3,
+  "batchnorm": true,
+  "pooling": "mean",
+  "self_loops": "stripped on input; gcn adds one per node, gine adds none",
+  "logits": "raw (apply softmax/argmax yourself; NOT log_softmax)",
+  "label_source": "raw CSV y field (0/1 as preprocessed by GDCE)",
+  "train_acc": 0.6634799235181644,
+  "val_acc": 0.7413793103448276,
+  "test_acc": 0.6379310344827587,
+  "best_epoch": 136,
+  "seed": 1,
+  "dataset": "proteins"
+}

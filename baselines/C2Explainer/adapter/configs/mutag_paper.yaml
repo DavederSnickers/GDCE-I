@@ -1,0 +1,39 @@
+# Default config for run_c2_mutag_paper_evaluation.py
+# Original (small) MUTAG dataset + the paper's own GCN classifier.
+# Both assets live INSIDE this repo, so paths are repo-relative and work
+# identically on the cluster checkout (no .cluster.yaml override needed).
+# Override any field on the CLI, e.g.:
+#   apprun python run_c2_mutag_paper_evaluation.py n_runs=1 n_samples_per_run=5
+
+# --- Classifier selection ---
+# 'gcn'  = the paper's own GCN (models/GCN_MUTAG_sd.pt)        -> run A
+# 'gine' = your GDCE GINE recipe trained on MUTAG              -> run B
+#          (train it first with train_gine_mutag.py, then pass gine_ckpt=...)
+classifier: gcn
+gine_ckpt: null            # required when classifier=gine, e.g. ckpt/gine_mutag/gine_mutag-....ckpt
+gdce_path: <GDCE_ROOT>  # only used for classifier=gine (GINE class import)
+
+# --- Paper assets (relative to repo root) ---
+ckpt: models/GCN_MUTAG_sd.pt
+dataset_path: data/MUTAG.pickle
+
+# --- Paper GCN architecture (must match GCN_MUTAG_sd.pt) ---
+nhid: 20
+nout: 20
+
+# --- C2Explainer hyperparameters (paper exp1_3 defaults for MUTAG) ---
+epochs: 1000
+lr: 0.1
+subgraph_mode: false      # false = add-mode (paper default)
+beta: 1.0                 # perturb-loss weight (= paper's lambda); higher -> more minimal CFs
+gamma: 0.1                # entropy-loss weight (only active when ent_loss=true)
+ent_loss: false
+
+# --- Evaluation protocol ---
+eval_split: test          # 'test' = last 20% after seed-42 shuffle (paper split); 'all' = full 188
+n_runs: 5
+n_samples_per_run: 30
+
+# --- Output / runtime ---
+out_dir: c2_mutag_paper_results
+cuda: "0"

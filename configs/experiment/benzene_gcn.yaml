@@ -1,0 +1,47 @@
+# @package _global_
+# Auto-derived from benzene_v1.yaml — identical hyperparameters, but the
+# guidance labels come from the SHARED judge 'judge_benzene_gcn' (test acc 0.9185)
+# instead of this method's own oracle. Run name 'benzene-gcn' keeps the
+# checkpoints of the five variants apart.
+general:
+    name: 'benzene-gcn'
+    gpus: 1
+    test_only: null
+    wandb: 'disabled'
+    check_val_every_n_epochs: 10
+    sample_every_val: 9999
+    samples_to_generate: 20
+    samples_to_save: 20
+    log_every_steps: 100
+    final_model_samples_to_generate: 30
+    final_model_samples_to_save: 30
+train:
+    n_epochs: 600
+    batch_size: 256
+    lr: 0.0002
+    ckpt_every_n_train_steps: 10
+    weight_decay: 1e-4
+    optimizer: adamw
+model:
+    type: 'discrete'
+    transition: 'marginal'
+    diffusion_steps: 500
+    diffusion_noise_schedule: 'cosine'
+    n_layers: 8
+    lambda_train: [5, 0]
+    extra_features: null
+    hidden_mlp_dims: { 'X': 256, 'E': 128, 'y': 256 }
+    hidden_dims: { 'dx': 256, 'de': 64, 'dy': 128, 'n_head': 8, 'dim_ffX': 256, 'dim_ffE': 128, 'dim_ffy': 256 }
+guidance:
+    guidance_target: ['ring']
+    p_uncond: 0.1
+    trainable_cf: True
+    guidance_medium: 'both'
+    s: 3
+    # GINE oracle, test/acc 0.9996, AUROC 1.000
+    graph_classifier_path: null
+    # Shared judge (test acc 0.9185) — the single classifier every method targets.
+    shared_judge_path: '${oc.env:GDCE_JUDGES}/judge_benzene_gcn'
+    label_source: 'classifier'
+    n_samples_per_test_molecule: 10
+    n_test_molecules_to_sample: 20

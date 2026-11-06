@@ -1,0 +1,38 @@
+# Default config for run_rsgg_mutag_evaluation.py
+# Override on the CLI:  apprun python run_rsgg_mutag_evaluation.py n_runs=1 n_samples_per_run=5
+# Override via file:    apprun python run_rsgg_mutag_evaluation.py --config configs/mutag.cluster.yaml
+
+# --- Paths ---
+gdce_path: <GDCE_ROOT>
+ckpt: ${gdce_path}/ckpt/mutag_mol/epoch=49.ckpt   # GDCE MutagGINELightning (only used when oracle=gdce)
+datadir: data/mutagenicity_mol/                   # relative to gdce_path
+dataset_name: mutagenicity_mol                    # GDCE SpectreGraphDataModule name
+
+# --- Oracle (prediction classifier) ---
+oracle: gcn_tf            # 'gcn_tf' = GRETEL paper GCN, trained here on GDCE data | 'gdce' = GDCE checkpoint
+oracle_epochs: 30         # gcn_tf training epochs (GRETEL paper: 30)
+
+# --- RSGG-CE (GraphCounteRGAN) hyperparameters ---
+# RSGG-CE paper (Prado-Romero et al., AAAI 2024) only evaluates Tree-Cycles + ASD,
+# so there is NO paper config for Mutagenicity. We adopt the paper's RSGG-CE scale
+# (Table 6): lr=1e-3 and training measured in EPOCHS over the train split. batch_size
+# is hard-wired to 1, so `epochs` => epochs * len(generator_data) single-graph updates.
+# The flat `training_iterations` (legacy tc28 value, < 1 epoch on Mutagenicity) is only
+# the fallback when `epochs` is null.
+n_nodes: 50                # fixed graph size (max_nodes <= 50); adjacency padded to this
+feature_dim: 8             # generator/converter node-feature dim
+epochs: 5                  # full passes over the per-class train subset (paper-scale)
+training_iterations: 100   # fallback only (used iff epochs is null)
+sampling_iterations: 10
+lr_generator: 0.001        # RSGG-CE paper Table 6
+lr_discriminator: 0.001    # RSGG-CE paper Table 6
+fold_id: 0
+
+# --- Evaluation protocol (identical to GDCE / C2) ---
+n_runs: 5
+n_samples_per_run: 100
+
+# --- Output / runtime ---
+out_dir: rsgg_mutagenicity_mol_results
+explainer_store_path: ./rsgg_explainers
+cuda: "0"

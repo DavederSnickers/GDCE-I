@@ -1,0 +1,31 @@
+# Default config for run_c2_nci1_evaluation.py
+# Override any field on the CLI: `apprun python run_c2_nci1_evaluation.py n_runs=1 ckpt=/other/path.ckpt`
+# Override via a second config file: `apprun python run_c2_nci1_evaluation.py --config configs/nci1.cluster.yaml`
+
+# --- Paths (adjust per environment) ---
+gdce_path: <GDCE_ROOT>
+ckpt: ${gdce_path}/ckpt/nci1_nofreq/epoch=124.ckpt   # GIN checkpoint (classifier=gin)
+datadir: data/nci1_nofreq/                 # relative to gdce_path
+
+# --- Classifier selection ---
+# 'gin' = your GDCE GIN (ckpt above)                                  -> current
+# 'gcn' = paper-style GCN trained on NCI1 (train_paper_gcn.py)        -> architecture comparison
+#         (both are edge-blind/topology-only -> confound-free GCN vs GIN comparison)
+classifier: gin
+gcn_ckpt: null            # required when classifier=gcn, e.g. ckpt/paper_gcn_nci1/gcn.pt
+gcn_in_dim: null          # GCN node-feature dim (null = auto-detect from dataset)
+nhid: 20                  # paper-style GCN hidden dim
+nout: 20
+
+# --- C2Explainer hyperparameters (paper / exp1_3 defaults) ---
+epochs: 1000
+lr: 0.1
+subgraph_mode: false                       # false = add-mode (paper default for graph-classification)
+
+# --- Evaluation protocol (same as GDCE inversion scripts) ---
+n_runs: 5
+n_samples_per_run: 100
+
+# --- Output / runtime ---
+out_dir: c2_nci1_nofreq_results
+cuda: "0"

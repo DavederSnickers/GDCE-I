@@ -1,0 +1,20 @@
+{
+  "num_features": 238,
+  "num_classes": 2,
+  "hidden": 128,
+  "num_layers": 3,
+  "edge_dim": 0,
+  "conv": "gcn",
+  "dropout": 0.3,
+  "batchnorm": true,
+  "pooling": "mean",
+  "self_loops": "stripped on input; gcn adds one per node, gine adds none",
+  "logits": "raw (apply softmax/argmax yourself; NOT log_softmax)",
+  "label_source": "raw CSV y field (0/1 as preprocessed by GDCE)",
+  "train_acc": 0.677644224608524,
+  "val_acc": 0.6497001383976626,
+  "test_acc": 0.6553898200830386,
+  "best_epoch": 1,
+  "seed": 1,
+  "dataset": "twitter"
+}

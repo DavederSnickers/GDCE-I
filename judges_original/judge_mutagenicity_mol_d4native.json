@@ -1,0 +1,21 @@
+{
+  "num_features": 13,
+  "num_classes": 2,
+  "hidden": 128,
+  "num_layers": 2,
+  "edge_dim": 0,
+  "conv": "d4gcn",
+  "dropout": 0.5,
+  "batchnorm": false,
+  "pooling": "mean",
+  "self_loops": "stripped on input, one unit self-loop per node, symmetric GCN normalisation",
+  "logits": "raw (apply softmax/argmax yourself; NOT log_softmax)",
+  "label_source": "raw CSV y field (0/1 as preprocessed by GDCE)",
+  "dataset": "mutagenicity_mol",
+  "seed": 0,
+  "train_acc": 0.8182582855224609,
+  "val_acc": 0.8005050420761108,
+  "test_acc": 0.8207070827484131,
+  "origin": "converted from D4Explainer <D4EXPLAINER_ROOT>/param/gnns/gdce_mutag_gcn.pt (native D4 training with D4's gnns/mutag_gnn.py recipe on GDCE's Mutagenicity split); the June D4Explainer model (alpha_cf 0.5) was trained against it",
+  "max_logit_deviation_vs_native": 0.0
+}

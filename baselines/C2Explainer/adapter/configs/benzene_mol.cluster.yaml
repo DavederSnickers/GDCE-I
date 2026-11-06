@@ -1,0 +1,22 @@
+# C2Explainer on BENZENE — cluster.
+# Uses the MUTAG evaluation script (run_c2_mutag_evaluation.py), NOT the nci1 one:
+# benzene is molecular with 5-class bond types and ships atom_decoder.json, so the
+# SMILES metrics are required to match the Mutagenicity column set.
+# Load with: apprun python run_c2_mutag_evaluation.py --config configs/benzene_mol.cluster.yaml
+
+gdce_path: <GDCE_ROOT>
+gdce_dataset_name: benzene
+datadir: data/benzene/
+
+# --- Classifier: C2's own paper-style GCN, trained on benzene (test acc 0.868) ---
+classifier: gcn
+gcn_ckpt: <C2EXPLAINER_ROOT>/ckpt/paper_gcn_benzene/gcn_bn.pt
+gcn_in_dim: null        # auto-detect (=8)
+nhid: 20
+nout: 20
+batchnorm: true         # must match train_paper_gcn --batchnorm
+# Measured: benzene edge_index carries NO self-loops, and the oracle was
+# trained on exactly that representation -> pass through unchanged.
+self_loops: none
+
+out_dir: c2_benzene_results
